@@ -1,0 +1,13 @@
+multimouse
+x11-atoms
+blocking-event-loop
+x11-blocking-event-loop
+timer-blocking
+x11-keepwindowpos
+opengl-es
+neon-mixer
+pulse-cork
+defaults
+x11-no-grab
+x11-fullscreen
+x11-xinput2

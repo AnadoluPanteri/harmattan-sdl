@@ -1,0 +1,13 @@
+Index: SDL-1.2.14/src/video/x11/SDL_x11wm.c
+===================================================================
+--- SDL-1.2.14.orig/src/video/x11/SDL_x11wm.c
++++ SDL-1.2.14/src/video/x11/SDL_x11wm.c
+@@ -318,6 +318,8 @@ SDL_GrabMode X11_GrabInputNoLock(_THIS,
+ {
+ 	int result;
+ 
++	mode &= ~SDL_GRAB_FULLSCREEN; /* Don't do fullscreen X11 grabs by default. */
++
+ 	if ( this->screen == NULL ) {
+ 		return(SDL_GRAB_OFF);
+ 	}

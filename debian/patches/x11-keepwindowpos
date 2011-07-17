@@ -1,0 +1,50 @@
+Index: repo/src/video/x11/SDL_x11events.c
+===================================================================
+--- repo.orig/src/video/x11/SDL_x11events.c
++++ repo/src/video/x11/SDL_x11events.c
+@@ -817,6 +817,8 @@ printf("MapNotify!\n");
+ #ifdef DEBUG_XEVENTS
+ printf("ConfigureNotify! (resize: %dx%d)\n", xevent.xconfigure.width, xevent.xconfigure.height);
+ #endif
++		window_x = xevent.xconfigure.x;
++		window_y = xevent.xconfigure.y;
+ 		if ( SDL_VideoSurface ) {
+ 		    if ((xevent.xconfigure.width != SDL_VideoSurface->w) ||
+ 		        (xevent.xconfigure.height != SDL_VideoSurface->h)) {
+@@ -836,6 +838,12 @@ printf("ConfigureNotify! (resize: %dx%d)
+ 	    }
+ 	    break;
+ 
++		case ReparentNotify: {
++		window_x = xevent.xreparent.x;
++		window_y = xevent.xreparent.y;
++		}
++		break;
++
+ 	    /* Have we been requested to quit (or another client message?) */
+ 	    case ClientMessage: {
+ 		if ( (xevent.xclient.format == 32) &&
+Index: repo/src/video/x11/SDL_x11video.h
+===================================================================
+--- repo.orig/src/video/x11/SDL_x11video.h
++++ repo/src/video/x11/SDL_x11video.h
+@@ -88,6 +88,10 @@ struct SDL_PrivateVideoData {
+     XImage *Ximage;		/* The X image for our window */
+     GC	gc;			/* The graphic context for drawing */
+ 
++	/* Current window position. */
++	int window_x;
++	int window_y;
++
+     /* The current width and height of the fullscreen mode */
+     int window_w;
+     int window_h;
+@@ -182,6 +186,8 @@ struct SDL_PrivateVideoData {
+ #define shminfo			(this->hidden->shminfo)
+ #define SDL_Ximage		(this->hidden->Ximage)
+ #define SDL_GC			(this->hidden->gc)
++#define window_x		(this->hidden->window_x)
++#define window_y		(this->hidden->window_y)
+ #define window_w		(this->hidden->window_w)
+ #define window_h		(this->hidden->window_h)
+ #define mouse_last		(this->hidden->mouse_last)

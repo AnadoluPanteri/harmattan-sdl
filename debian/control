@@ -1,0 +1,41 @@
+Source: libsdl1.2
+Priority: optional
+Section: libs
+Maintainer: Javier S. Pedro <maemo@javispedro.com>
+Standards-Version: 3.7.3
+Build-Depends: dpkg (>= 1.13.2), debhelper (>= 4.0), quilt, libx11-dev,
+ libxext-dev, libxt-dev, libxv-dev, libxi-dev, x11proto-core-dev,
+ libasound2-dev, libpulse-dev, opengles-sgx-img-common-dev [armel]
+
+Package: libsdl1.2
+Architecture: any
+Section: libs
+Priority: extra
+Depends: ${shlibs:Depends}
+Description: Simple DirectMedia Layer (with X11 and PulseAudio options)
+ SDL is a library that allows programs portable low level access to a video
+ framebuffer, audio output, mouse, and keyboard.
+ .
+ This version of SDL is compiled with X11 graphics and PulseAudio sound.
+
+Package: libsdl1.2-dev
+Architecture: any
+Section: libdevel
+Depends: libsdl1.2 (= ${binary:Version}), libx11-dev
+Description: Simple DirectMedia Layer development files
+ SDL is a library that allows programs portable low level access to a video
+ framebuffer, audio output, mouse, and keyboard.
+ .
+ This package contains the files needed to compile and link programs which
+ use SDL.
+
+Package: libsdl1.2-dbg
+Section: libdevel
+Architecture: any
+Depends: libsdl1.2 (= ${Source-Version})
+Description: Simple DirectMedia Layer development files
+ SDL is a library that allows programs portable low level access to a video
+ framebuffer, audio output, mouse, and keyboard.
+ .
+ This package contains the files needed to compile and link programs which
+ use SDL.

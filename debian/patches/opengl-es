@@ -1,0 +1,3591 @@
+Index: repo/src/video/SDL_video.c
+===================================================================
+--- repo.orig/src/video/SDL_video.c
++++ repo/src/video/SDL_video.c
+@@ -140,7 +140,7 @@ void SDL_VideoQuit(void);
+ void SDL_GL_UpdateRectsLock(SDL_VideoDevice* this, int numrects, SDL_Rect* rects);
+ 
+ static SDL_GrabMode SDL_WM_GrabInputOff(void);
+-#if SDL_VIDEO_OPENGL
++#if SDL_VIDEO_OPENGL || SDL_VIDEO_OPENGL_ES
+ static int lock_count = 0;
+ #endif
+ 
+@@ -239,6 +239,8 @@ int SDL_VideoInit (const char *driver_na
+ 	video->gl_config.multisamplebuffers = 0;
+ 	video->gl_config.multisamplesamples = 0;
+ 	video->gl_config.accelerated = -1; /* not known, don't set */
++	video->gl_config.major_version = 2;
++	video->gl_config.minor_version = 0;
+ 	video->gl_config.swap_control = -1; /* not known, don't set */
+ 	
+ 	/* Initialize the video subsystem */
+@@ -633,7 +635,7 @@ SDL_Surface * SDL_SetVideoMode (int widt
+ 		flags |= SDL_HWSURFACE;
+ 	}
+ 
+-	is_opengl = ( ( flags & SDL_OPENGL ) == SDL_OPENGL );
++	is_opengl = flags & (SDL_OPENGL | SDL_OPENGLES);
+ 	if ( is_opengl ) {
+ 		/* These flags are for 2D video modes only */
+ 		flags &= ~(SDL_HWSURFACE|SDL_DOUBLEBUF);
+@@ -680,7 +682,7 @@ SDL_Surface * SDL_SetVideoMode (int widt
+ #endif
+ 
+ 	    /* Sam - If we asked for OpenGL mode, and didn't get it, fail */
+-	    if ( is_opengl && !(mode->flags & SDL_OPENGL) ) {
++	    if ( is_opengl && !(mode->flags & (SDL_OPENGL|SDL_OPENGLES)) ) {
+ 		mode = NULL;
+ 		SDL_SetError("OpenGL not available");
+ 	    }
+@@ -758,7 +760,7 @@ SDL_Surface * SDL_SetVideoMode (int widt
+ 
+ #if SDL_VIDEO_OPENGL
+ 	/* Load GL symbols (before MakeCurrent, where we need glGetString). */
+-	if ( flags & (SDL_OPENGL | SDL_OPENGLBLIT) ) {
++	if ( (flags & SDL_OPENGLBLIT) == SDL_OPENGLBLIT ) {
+ 
+ #if defined(__QNXNTO__) && (_NTO_VERSION < 630)
+ #define __SDL_NOGETPROCADDR__
+@@ -784,6 +786,29 @@ SDL_Surface * SDL_SetVideoMode (int widt
+ 	}
+ #endif /* SDL_VIDEO_OPENGL */
+ 
++#if SDL_VIDEO_OPENGL_ES
++	/* Load GL symbols (before MakeCurrent, where we need glGetString). */
++	if ( (flags & SDL_OPENGLESBLIT) == SDL_OPENGLESBLIT ) {
++
++#ifdef __SDL_NOGETPROCADDR__
++    #define SDL_PROC(ret,func,params) video->GLES_##func=func;
++#else
++    #define SDL_PROC(ret,func,params) \
++    do { \
++        video->GLES_##func = SDL_GLES_GetProcAddress(#func); \
++        if ( ! video->GLES_##func ) { \
++            SDL_SetError("Couldn't load GL function %s: %s\n", #func, SDL_GetError()); \
++        return(NULL); \
++        } \
++    } while ( 0 );
++
++#endif /* __SDL_NOGETPROCADDR__ */
++
++#include "SDL_glesfuncs.h"
++#undef SDL_PROC
++	}
++#endif /* SDL_VIDEO_OPENGL */
++
+ 	/* If we're running OpenGL, make the context current */
+ 	if ( (video->screen->flags & SDL_OPENGL) &&
+ 	      video->GL_MakeCurrent ) {
+@@ -792,6 +817,14 @@ SDL_Surface * SDL_SetVideoMode (int widt
+ 		}
+ 	}
+ 
++	/* If we're running OpenGL ES, make the context current */
++	if ( (video->screen->flags & SDL_OPENGLES) &&
++	      video->GLES_MakeCurrent ) {
++		if ( video->GLES_MakeCurrent(this) < 0 ) {
++			return(NULL);
++		}
++	}
++
+ 	/* Set up a fake SDL surface for OpenGL "blitting" */
+ 	if ( (flags & SDL_OPENGLBLIT) == SDL_OPENGLBLIT ) {
+ 		/* Load GL functions for performing the texture updates */
+@@ -881,7 +914,7 @@ SDL_Surface * SDL_SetVideoMode (int widt
+ 		2.  We need a hardware palette and didn't get one.
+ 		3.  We need a software surface and got a hardware surface.
+ 	*/
+-	if ( !(SDL_VideoSurface->flags & SDL_OPENGL) &&
++	if ( !(SDL_VideoSurface->flags & (SDL_OPENGL | SDL_OPENGLES)) &&
+ 	     (
+ 	     (  !(flags&SDL_ANYFORMAT) &&
+ 			(SDL_VideoSurface->format->BitsPerPixel != bpp)) ||
+@@ -1027,7 +1060,7 @@ void SDL_UpdateRects (SDL_Surface *scree
+ 	SDL_VideoDevice *video = current_video;
+ 	SDL_VideoDevice *this = current_video;
+ 
+-	if ( (screen->flags & (SDL_OPENGL | SDL_OPENGLBLIT)) == SDL_OPENGL ) {
++	if ( screen->flags & (SDL_OPENGL | SDL_OPENGLBLIT | SDL_OPENGLES) ) {
+ 		SDL_SetError("OpenGL active, use SDL_GL_SwapBuffers()");
+ 		return;
+ 	}
+@@ -1412,6 +1445,26 @@ int SDL_GL_LoadLibrary(const char *path)
+ 	return(retval);
+ }
+ 
++/* Load the GLES driver library */
++int SDL_GLES_LoadLibrary(const char *path)
++{
++	SDL_VideoDevice *video = current_video;
++	SDL_VideoDevice *this = current_video;
++	int retval;
++
++	retval = -1;
++	if ( video == NULL ) {
++		SDL_SetError("Video subsystem has not been initialized");
++	} else {
++		if ( video->GLES_LoadLibrary ) {
++			retval = video->GLES_LoadLibrary(this, path);
++		} else {
++			SDL_SetError("No dynamic GLES support in video driver");
++		}
++	}
++	return(retval);
++}
++
+ void *SDL_GL_GetProcAddress(const char* proc)
+ {
+ 	SDL_VideoDevice *video = current_video;
+@@ -1431,6 +1484,25 @@ void *SDL_GL_GetProcAddress(const char*
+ 	return func;
+ }
+ 
++void *SDL_GLES_GetProcAddress(const char* proc)
++{
++	SDL_VideoDevice *video = current_video;
++	SDL_VideoDevice *this = current_video;
++	void *func;
++
++	func = NULL;
++	if ( video->GLES_GetProcAddress ) {
++		if ( video->gl_config.driver_loaded ) {
++			func = video->GLES_GetProcAddress(this, proc);
++		} else {
++			SDL_SetError("No GLES driver has been loaded");
++		}
++	} else {
++		SDL_SetError("No dynamic GLES support in video driver");
++	}
++	return func;
++}
++
+ /* Set the specified GL attribute for setting up a GL video mode */
+ int SDL_GL_SetAttribute( SDL_GLattr attr, int value )
+ {
+@@ -1487,6 +1559,15 @@ int SDL_GL_SetAttribute( SDL_GLattr attr
+ 		case SDL_GL_ACCELERATED_VISUAL:
+ 			video->gl_config.accelerated = value;
+ 			break;
++		case SDL_GL_RETAINED_BACKING:
++			video->gl_config.retained_backing = value;
++			break;
++		case SDL_GL_CONTEXT_MAJOR_VERSION:
++			video->gl_config.major_version = value;
++			break;
++		case SDL_GL_CONTEXT_MINOR_VERSION:
++			video->gl_config.minor_version = value;
++			break;
+ 		case SDL_GL_SWAP_CONTROL:
+ 			video->gl_config.swap_control = value;
+ 			break;
+@@ -1505,7 +1586,9 @@ int SDL_GL_GetAttribute(SDL_GLattr attr,
+ 	SDL_VideoDevice* video = current_video;
+ 	SDL_VideoDevice* this = current_video;
+ 
+-	if ( video->GL_GetAttribute ) {
++	if ( (this->screen->flags & SDL_OPENGLES) && video->GLES_GetAttribute ) {
++		retval = this->GLES_GetAttribute(this, attr, value);
++	} else if ( (this->screen->flags & SDL_OPENGL) && video->GL_GetAttribute ) {
+ 		retval = this->GL_GetAttribute(this, attr, value);
+ 	} else {
+ 		*value = 0;
+@@ -1520,7 +1603,9 @@ void SDL_GL_SwapBuffers(void)
+ 	SDL_VideoDevice *video = current_video;
+ 	SDL_VideoDevice *this = current_video;
+ 
+-	if ( video->screen->flags & SDL_OPENGL ) {
++	if ( video->screen->flags & SDL_OPENGLES ) {
++		video->GLES_SwapBuffers(this);
++	} else if ( video->screen->flags & SDL_OPENGL ) {
+ 		video->GL_SwapBuffers(this);
+ 	} else {
+ 		SDL_SetError("OpenGL video mode has not been set");
+@@ -1612,47 +1697,85 @@ void SDL_GL_UpdateRects(int numrects, SD
+ /* Lock == save current state */
+ void SDL_GL_Lock()
+ {
+-#if SDL_VIDEO_OPENGL
++#if SDL_VIDEO_OPENGL | SDL_VIDEO_OPENGL_ES
+ 	lock_count--;
+ 	if (lock_count==-1)
+ 	{
+ 		SDL_VideoDevice *this = current_video;
+ 
+-		this->glPushAttrib( GL_ALL_ATTRIB_BITS );	/* TODO: narrow range of what is saved */
++#if SDL_VIDEO_OPENGL_ES
++		if (this->screen->flags & SDL_OPENGLES)
++		{
++			this->GLES_glEnable(GL_TEXTURE_2D);
++			this->GLES_glEnable(GL_BLEND);
++			this->GLES_glDisable(GL_FOG);
++			this->GLES_glDisable(GL_ALPHA_TEST);
++			this->GLES_glDisable(GL_DEPTH_TEST);
++			this->GLES_glDisable(GL_SCISSOR_TEST);
++			this->GLES_glDisable(GL_STENCIL_TEST);
++			this->GLES_glDisable(GL_CULL_FACE);
++
++			this->GLES_glBindTexture( GL_TEXTURE_2D, this->texture );
++			this->GLES_glTexEnvf( GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE );
++			this->GLES_glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST );
++			this->GLES_glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST );
++			this->GLES_glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT );
++			this->GLES_glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT );
++
++			this->GLES_glPixelStorei( GL_UNPACK_ALIGNMENT, 4 );
++			this->GLES_glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
++			(this->GLES_glColor4f)(1.0, 1.0, 1.0, 1.0);               /* Solaris workaround */
++
++			this->GLES_glViewport(0, 0, this->screen->w, this->screen->h);
++			this->GLES_glMatrixMode(GL_PROJECTION);
++			this->GLES_glPushMatrix();
++			this->GLES_glLoadIdentity();
++
++			this->GLES_glOrthof(0.0, this->screen->w, this->screen->h, 0.0, 0.0, 1.0);
++		}
++#endif /* SDL_VIDEO_OPENGL_ES */
++#if SDL_VIDEO_OPENGL & SDL_VIDEO_OPENGL_ES
++		else
++#endif
++#if SDL_VIDEO_OPENGL
++		{
++			this->glPushAttrib( GL_ALL_ATTRIB_BITS );	/* TODO: narrow range of what is saved */
+ #ifdef GL_CLIENT_PIXEL_STORE_BIT
+-		this->glPushClientAttrib( GL_CLIENT_PIXEL_STORE_BIT );
++			this->glPushClientAttrib( GL_CLIENT_PIXEL_STORE_BIT );
+ #endif
+ 
+-		this->glEnable(GL_TEXTURE_2D);
+-		this->glEnable(GL_BLEND);
+-		this->glDisable(GL_FOG);
+-		this->glDisable(GL_ALPHA_TEST);
+-		this->glDisable(GL_DEPTH_TEST);
+-		this->glDisable(GL_SCISSOR_TEST);	
+-		this->glDisable(GL_STENCIL_TEST);
+-		this->glDisable(GL_CULL_FACE);
+-
+-		this->glBindTexture( GL_TEXTURE_2D, this->texture );
+-		this->glTexEnvf( GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE );
+-		this->glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST );
+-		this->glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST );
+-		this->glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT );
+-		this->glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT );
+-
+-		this->glPixelStorei( GL_UNPACK_ROW_LENGTH, this->screen->pitch / this->screen->format->BytesPerPixel );
+-		this->glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+-		(this->glColor4f)(1.0, 1.0, 1.0, 1.0);		/* Solaris workaround */
+-
+-		this->glViewport(0, 0, this->screen->w, this->screen->h);
+-		this->glMatrixMode(GL_PROJECTION);
+-		this->glPushMatrix();
+-		this->glLoadIdentity();
+-
+-		this->glOrtho(0.0, (GLdouble) this->screen->w, (GLdouble) this->screen->h, 0.0, 0.0, 1.0);
+-
+-		this->glMatrixMode(GL_MODELVIEW);
+-		this->glPushMatrix();
+-		this->glLoadIdentity();
++			this->glEnable(GL_TEXTURE_2D);
++			this->glEnable(GL_BLEND);
++			this->glDisable(GL_FOG);
++			this->glDisable(GL_ALPHA_TEST);
++			this->glDisable(GL_DEPTH_TEST);
++			this->glDisable(GL_SCISSOR_TEST);
++			this->glDisable(GL_STENCIL_TEST);
++			this->glDisable(GL_CULL_FACE);
++
++			this->glBindTexture( GL_TEXTURE_2D, this->texture );
++			this->glTexEnvf( GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE );
++			this->glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST );
++			this->glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST );
++			this->glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT );
++			this->glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT );
++
++			this->glPixelStorei( GL_UNPACK_ROW_LENGTH, this->screen->pitch / this->screen->format->BytesPerPixel );
++			this->glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
++			(this->glColor4f)(1.0, 1.0, 1.0, 1.0);		/* Solaris workaround */
++
++			this->glViewport(0, 0, this->screen->w, this->screen->h);
++			this->glMatrixMode(GL_PROJECTION);
++			this->glPushMatrix();
++			this->glLoadIdentity();
++
++			this->glOrtho(0.0, (GLdouble) this->screen->w, (GLdouble) this->screen->h, 0.0, 0.0, 1.0);
++
++			this->glMatrixMode(GL_MODELVIEW);
++			this->glPushMatrix();
++			this->glLoadIdentity();
++		}
++#endif /* SDL_VIDEO_OPENGL */
+ 	}
+ #endif
+ }
+@@ -1660,18 +1783,38 @@ void SDL_GL_Lock()
+ /* Unlock == restore saved state */
+ void SDL_GL_Unlock()
+ {
+-#if SDL_VIDEO_OPENGL
++#if SDL_VIDEO_OPENGL | SDL_VIDEO_OPENGL_ES
+ 	lock_count++;
+ 	if (lock_count==0)
+ 	{
+ 		SDL_VideoDevice *this = current_video;
+ 
+-		this->glPopMatrix();
+-		this->glMatrixMode(GL_PROJECTION);
+-		this->glPopMatrix();
++#if SDL_VIDEO_OPENGL_ES
++		if (this->screen->flags & SDL_OPENGLES)
++		{
++			this->GLES_glPopMatrix();
++			this->GLES_glMatrixMode(GL_PROJECTION);
++			this->GLES_glPopMatrix();
++
++			this->GLES_glDisable(GL_TEXTURE_2D);
++			this->GLES_glDisable(GL_BLEND);
++			this->GLES_glEnable(GL_DEPTH_TEST);
++			this->GLES_glEnable(GL_CULL_FACE);
++		}
++#endif /* SDL_VIDEO_OPENGL_ES */
++#if SDL_VIDEO_OPENGL & SDL_VIDEO_OPENGL_ES
++		else
++#endif
++#if SDL_VIDEO_OPENGL
++		{
++			this->glPopMatrix();
++			this->glMatrixMode(GL_PROJECTION);
++			this->glPopMatrix();
+ 
+-		this->glPopClientAttrib();
+-		this->glPopAttrib();
++			this->glPopClientAttrib();
++			this->glPopAttrib();
++		}
++#endif
+ 	}
+ #endif
+ }
+Index: repo/src/video/SDL_sysvideo.h
+===================================================================
+--- repo.orig/src/video/SDL_sysvideo.h
++++ repo/src/video/SDL_sysvideo.h
+@@ -35,7 +35,9 @@
+ 
+ #if SDL_VIDEO_OPENGL
+ #include "SDL_opengl.h"
+-#endif /* SDL_VIDEO_OPENGL */
++#elif SDL_VIDEO_OPENGL_ES
++#include "SDL_opengles.h"
++#endif
+ 
+ /* The SDL video driver */
+ typedef struct SDL_VideoDevice SDL_VideoDevice;
+@@ -182,15 +184,39 @@ struct SDL_VideoDevice {
+ 	/* Swap the current buffers in double buffer mode. */
+ 	void (*GL_SwapBuffers)(_THIS);
+ 
++	/* Sets the dll to use for OpenGL ES and loads it */
++	int (*GLES_LoadLibrary)(_THIS, const char *path);
++
++	/* Retrieves the address of a function in the gl library */
++	void* (*GLES_GetProcAddress)(_THIS, const char *proc);
++
++	/* Get attribute information from the windowing system. */
++	int (*GLES_GetAttribute)(_THIS, SDL_GLattr attrib, int* value);
++
++	/* Make the context associated with this driver current */
++	int (*GLES_MakeCurrent)(_THIS);
++
++	/* Swap the current buffers in double buffer mode. */
++	void (*GLES_SwapBuffers)(_THIS);
++
+   	/* OpenGL functions for SDL_OPENGLBLIT */
+-#if SDL_VIDEO_OPENGL
+ #if !defined(__WIN32__)
+ #define WINAPI
+ #endif
++
++#if SDL_VIDEO_OPENGL
+ #define SDL_PROC(ret,func,params) ret (WINAPI *func) params;
+ #include "SDL_glfuncs.h"
+ #undef SDL_PROC
++#endif
++
++#if SDL_VIDEO_OPENGL_ES
++#define SDL_PROC(ret,func,params) ret (WINAPI *(GLES_##func)) params;
++#include "SDL_glesfuncs.h"
++#undef SDL_PROC
++#endif
+ 
++#if SDL_VIDEO_OPENGL | SDL_VIDEO_OPENGL_ES
+ 	/* Texture id */
+ 	GLuint texture;
+ #endif
+@@ -295,6 +321,9 @@ struct SDL_VideoDevice {
+ 		int multisamplebuffers;
+ 		int multisamplesamples;
+ 		int accelerated;
++		int major_version;
++		int minor_version;
++		int retained_backing;
+ 		int swap_control;
+ 		int driver_loaded;
+ 		char driver_path[256];
+@@ -305,6 +334,7 @@ struct SDL_VideoDevice {
+ 	/* Data private to this driver */
+ 	struct SDL_PrivateVideoData *hidden;
+ 	struct SDL_PrivateGLData *gl_data;
++	struct SDL_PrivateGLESData *gles_data;
+ 
+ 	/* * * */
+ 	/* The function used to dispose of this structure */
+Index: repo/src/video/SDL_glesfuncs.h
+===================================================================
+--- /dev/null
++++ repo/src/video/SDL_glesfuncs.h
+@@ -0,0 +1,341 @@
++/* list of OpenGL ES 1 functions sorted alphabetically
++   If you need to use a GL function from the SDL video subsystem,
++   change it's entry from SDL_PROC_UNUSED to SDL_PROC and rebuild.
++*/
++#define SDL_PROC_UNUSED(ret,func,params)
++SDL_PROC_UNUSED(void,glAccum,(GLenum,GLfloat))
++SDL_PROC_UNUSED(void,glAlphaFunc,(GLenum,GLclampf))
++SDL_PROC_UNUSED(GLboolean,glAreTexturesResident,(GLsizei,const GLuint*,GLboolean*))
++SDL_PROC_UNUSED(void,glArrayElement,(GLint))
++SDL_PROC_UNUSED(void,glBegin,(GLenum))
++SDL_PROC(void,glBindTexture,(GLenum,GLuint))
++SDL_PROC_UNUSED(void,glBitmap,(GLsizei,GLsizei,GLfloat,GLfloat,GLfloat,GLfloat,const GLubyte*))
++SDL_PROC(void,glBlendFunc,(GLenum,GLenum))
++SDL_PROC_UNUSED(void,glCallList,(GLuint))
++SDL_PROC_UNUSED(void,glCallLists,(GLsizei,GLenum,const GLvoid*))
++SDL_PROC_UNUSED(void,glClear,(GLbitfield))
++SDL_PROC_UNUSED(void,glClearAccum,(GLfloat,GLfloat,GLfloat,GLfloat))
++SDL_PROC_UNUSED(void,glClearColor,(GLclampf,GLclampf,GLclampf,GLclampf))
++SDL_PROC_UNUSED(void,glClearDepth,(GLclampd))
++SDL_PROC_UNUSED(void,glClearIndex,(GLfloat))
++SDL_PROC_UNUSED(void,glClearStencil,(GLint))
++SDL_PROC_UNUSED(void,glClipPlane,(GLenum,const GLfloat*))
++SDL_PROC_UNUSED(void,glColor3b,(GLbyte,GLbyte,GLbyte))
++SDL_PROC_UNUSED(void,glColor3bv,(const GLbyte*))
++SDL_PROC_UNUSED(void,glColor3d,(GLfloat,GLfloat,GLfloat))
++SDL_PROC_UNUSED(void,glColor3dv,(const GLfloat*))
++SDL_PROC_UNUSED(void,glColor3f,(GLfloat,GLfloat,GLfloat))
++SDL_PROC_UNUSED(void,glColor3fv,(const GLfloat*))
++SDL_PROC_UNUSED(void,glColor3i,(GLint,GLint,GLint))
++SDL_PROC_UNUSED(void,glColor3iv,(const GLint*))
++SDL_PROC_UNUSED(void,glColor3s,(GLshort,GLshort,GLshort))
++SDL_PROC_UNUSED(void,glColor3sv,(const GLshort*))
++SDL_PROC_UNUSED(void,glColor3ub,(GLubyte,GLubyte,GLubyte))
++SDL_PROC_UNUSED(void,glColor3ubv,(const GLubyte*))
++SDL_PROC_UNUSED(void,glColor3ui,(GLuint,GLuint,GLuint))
++SDL_PROC_UNUSED(void,glColor3uiv,(const GLuint*))
++SDL_PROC_UNUSED(void,glColor3us,(GLushort,GLushort,GLushort))
++SDL_PROC_UNUSED(void,glColor3usv,(const GLushort*))
++SDL_PROC_UNUSED(void,glColor4b,(GLbyte,GLbyte,GLbyte,GLbyte))
++SDL_PROC_UNUSED(void,glColor4bv,(const GLbyte*))
++SDL_PROC_UNUSED(void,glColor4d,(GLfloat,GLfloat,GLfloat,GLfloat))
++SDL_PROC_UNUSED(void,glColor4dv,(const GLfloat*))
++SDL_PROC(void,glColor4f,(GLfloat,GLfloat,GLfloat,GLfloat))
++SDL_PROC_UNUSED(void,glColor4fv,(const GLfloat*))
++SDL_PROC_UNUSED(void,glColor4i,(GLint,GLint,GLint,GLint))
++SDL_PROC_UNUSED(void,glColor4iv,(const GLint*))
++SDL_PROC_UNUSED(void,glColor4s,(GLshort,GLshort,GLshort,GLshort))
++SDL_PROC_UNUSED(void,glColor4sv,(const GLshort*))
++SDL_PROC_UNUSED(void,glColor4ub,(GLubyte red, GLubyte green, GLubyte blue, GLubyte alpha))
++SDL_PROC_UNUSED(void,glColor4ubv,(const GLubyte *v))
++SDL_PROC_UNUSED(void,glColor4ui,(GLuint red, GLuint green, GLuint blue, GLuint alpha))
++SDL_PROC_UNUSED(void,glColor4uiv,(const GLuint *v))
++SDL_PROC_UNUSED(void,glColor4us,(GLushort red, GLushort green, GLushort blue, GLushort alpha))
++SDL_PROC_UNUSED(void,glColor4usv,(const GLushort *v))
++SDL_PROC_UNUSED(void,glColorMask,(GLboolean red, GLboolean green, GLboolean blue, GLboolean alpha))
++SDL_PROC_UNUSED(void,glColorMaterial,(GLenum face, GLenum mode))
++SDL_PROC_UNUSED(void,glColorPointer,(GLint size, GLenum type, GLsizei stride, const GLvoid *pointer))
++SDL_PROC_UNUSED(void,glCopyPixels,(GLint x, GLint y, GLsizei width, GLsizei height, GLenum type))
++SDL_PROC_UNUSED(void,glCopyTexImage1D,(GLenum target, GLint level, GLenum internalFormat, GLint x, GLint y, GLsizei width, GLint border))
++SDL_PROC_UNUSED(void,glCopyTexImage2D,(GLenum target, GLint level, GLenum internalFormat, GLint x, GLint y, GLsizei width, GLsizei height, GLint border))
++SDL_PROC_UNUSED(void,glCopyTexSubImage1D,(GLenum target, GLint level, GLint xoffset, GLint x, GLint y, GLsizei width))
++SDL_PROC_UNUSED(void,glCopyTexSubImage2D,(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint x, GLint y, GLsizei width, GLsizei height))
++SDL_PROC_UNUSED(void,glCullFace,(GLenum mode))
++SDL_PROC_UNUSED(void,glDeleteLists,(GLuint list, GLsizei range))
++SDL_PROC_UNUSED(void,glDeleteTextures,(GLsizei n, const GLuint *textures))
++SDL_PROC_UNUSED(void,glDepthFunc,(GLenum func))
++SDL_PROC_UNUSED(void,glDepthMask,(GLboolean flag))
++SDL_PROC_UNUSED(void,glDepthRange,(GLclampd zNear, GLclampd zFar))
++SDL_PROC(void,glDisable,(GLenum cap))
++SDL_PROC(void,glDisableClientState,(GLenum array))
++SDL_PROC_UNUSED(void,glDrawArrays,(GLenum mode, GLint first, GLsizei count))
++SDL_PROC_UNUSED(void,glDrawBuffer,(GLenum mode))
++SDL_PROC(void,glDrawElements,(GLenum mode, GLsizei count, GLenum type, const GLvoid *indices))
++SDL_PROC_UNUSED(void,glDrawPixels,(GLsizei width, GLsizei height, GLenum format, GLenum type, const GLvoid *pixels))
++SDL_PROC_UNUSED(void,glEdgeFlag,(GLboolean flag))
++SDL_PROC_UNUSED(void,glEdgeFlagPointer,(GLsizei stride, const GLvoid *pointer))
++SDL_PROC_UNUSED(void,glEdgeFlagv,(const GLboolean *flag))
++SDL_PROC(void,glEnable,(GLenum cap))
++SDL_PROC(void,glEnableClientState,(GLenum array))
++SDL_PROC_UNUSED(void,glEnd,(void))
++SDL_PROC_UNUSED(void,glEndList,(void))
++SDL_PROC_UNUSED(void,glEvalCoord1d,(GLfloat u))
++SDL_PROC_UNUSED(void,glEvalCoord1dv,(const GLfloat *u))
++SDL_PROC_UNUSED(void,glEvalCoord1f,(GLfloat u))
++SDL_PROC_UNUSED(void,glEvalCoord1fv,(const GLfloat *u))
++SDL_PROC_UNUSED(void,glEvalCoord2d,(GLfloat u, GLfloat v))
++SDL_PROC_UNUSED(void,glEvalCoord2dv,(const GLfloat *u))
++SDL_PROC_UNUSED(void,glEvalCoord2f,(GLfloat u, GLfloat v))
++SDL_PROC_UNUSED(void,glEvalCoord2fv,(const GLfloat *u))
++SDL_PROC_UNUSED(void,glEvalMesh1,(GLenum mode, GLint i1, GLint i2))
++SDL_PROC_UNUSED(void,glEvalMesh2,(GLenum mode, GLint i1, GLint i2, GLint j1, GLint j2))
++SDL_PROC_UNUSED(void,glEvalPoint1,(GLint i))
++SDL_PROC_UNUSED(void,glEvalPoint2,(GLint i, GLint j))
++SDL_PROC_UNUSED(void,glFeedbackBuffer,(GLsizei size, GLenum type, GLfloat *buffer))
++SDL_PROC_UNUSED(void,glFinish,(void))
++SDL_PROC_UNUSED(void,glFlush,(void))
++SDL_PROC_UNUSED(void,glFogf,(GLenum pname, GLfloat param))
++SDL_PROC_UNUSED(void,glFogfv,(GLenum pname, const GLfloat *params))
++SDL_PROC_UNUSED(void,glFogi,(GLenum pname, GLint param))
++SDL_PROC_UNUSED(void,glFogiv,(GLenum pname, const GLint *params))
++SDL_PROC_UNUSED(void,glFrontFace,(GLenum mode))
++SDL_PROC_UNUSED(void,glFrustum,(GLfloat left, GLfloat right, GLfloat bottom, GLfloat top, GLfloat zNear, GLfloat zFar))
++SDL_PROC_UNUSED(GLuint,glGenLists,(GLsizei range))
++SDL_PROC(void,glGenTextures,(GLsizei n, GLuint *textures))
++SDL_PROC_UNUSED(void,glGetBooleanv,(GLenum pname, GLboolean *params))
++SDL_PROC_UNUSED(void,glGetClipPlane,(GLenum plane, GLfloat *equation))
++SDL_PROC_UNUSED(void,glGetDoublev,(GLenum pname, GLfloat *params))
++SDL_PROC_UNUSED(GLenum,glGetError,(void))
++SDL_PROC_UNUSED(void,glGetFloatv,(GLenum pname, GLfloat *params))
++SDL_PROC_UNUSED(void,glGetIntegerv,(GLenum pname, GLint *params))
++SDL_PROC_UNUSED(void,glGetLightfv,(GLenum light, GLenum pname, GLfloat *params))
++SDL_PROC_UNUSED(void,glGetLightiv,(GLenum light, GLenum pname, GLint *params))
++SDL_PROC_UNUSED(void,glGetMapdv,(GLenum target, GLenum query, GLfloat *v))
++SDL_PROC_UNUSED(void,glGetMapfv,(GLenum target, GLenum query, GLfloat *v))
++SDL_PROC_UNUSED(void,glGetMapiv,(GLenum target, GLenum query, GLint *v))
++SDL_PROC_UNUSED(void,glGetMaterialfv,(GLenum face, GLenum pname, GLfloat *params))
++SDL_PROC_UNUSED(void,glGetMaterialiv,(GLenum face, GLenum pname, GLint *params))
++SDL_PROC_UNUSED(void,glGetPixelMapfv,(GLenum map, GLfloat *values))
++SDL_PROC_UNUSED(void,glGetPixelMapuiv,(GLenum map, GLuint *values))
++SDL_PROC_UNUSED(void,glGetPixelMapusv,(GLenum map, GLushort *values))
++SDL_PROC_UNUSED(void,glGetPointerv,(GLenum pname, GLvoid* *params))
++SDL_PROC_UNUSED(void,glGetPolygonStipple,(GLubyte *mask))
++SDL_PROC(const GLubyte *,glGetString,(GLenum name))
++SDL_PROC_UNUSED(void,glGetTexEnvfv,(GLenum target, GLenum pname, GLfloat *params))
++SDL_PROC_UNUSED(void,glGetTexEnviv,(GLenum target, GLenum pname, GLint *params))
++SDL_PROC_UNUSED(void,glGetTexGendv,(GLenum coord, GLenum pname, GLfloat *params))
++SDL_PROC_UNUSED(void,glGetTexGenfv,(GLenum coord, GLenum pname, GLfloat *params))
++SDL_PROC_UNUSED(void,glGetTexGeniv,(GLenum coord, GLenum pname, GLint *params))
++SDL_PROC_UNUSED(void,glGetTexImage,(GLenum target, GLint level, GLenum format, GLenum type, GLvoid *pixels))
++SDL_PROC_UNUSED(void,glGetTexLevelParameterfv,(GLenum target, GLint level, GLenum pname, GLfloat *params))
++SDL_PROC_UNUSED(void,glGetTexLevelParameteriv,(GLenum target, GLint level, GLenum pname, GLint *params))
++SDL_PROC_UNUSED(void,glGetTexParameterfv,(GLenum target, GLenum pname, GLfloat *params))
++SDL_PROC_UNUSED(void,glGetTexParameteriv,(GLenum target, GLenum pname, GLint *params))
++SDL_PROC_UNUSED(void,glHint,(GLenum target, GLenum mode))
++SDL_PROC_UNUSED(void,glIndexMask,(GLuint mask))
++SDL_PROC_UNUSED(void,glIndexPointer,(GLenum type, GLsizei stride, const GLvoid *pointer))
++SDL_PROC_UNUSED(void,glIndexd,(GLfloat c))
++SDL_PROC_UNUSED(void,glIndexdv,(const GLfloat *c))
++SDL_PROC_UNUSED(void,glIndexf,(GLfloat c))
++SDL_PROC_UNUSED(void,glIndexfv,(const GLfloat *c))
++SDL_PROC_UNUSED(void,glIndexi,(GLint c))
++SDL_PROC_UNUSED(void,glIndexiv,(const GLint *c))
++SDL_PROC_UNUSED(void,glIndexs,(GLshort c))
++SDL_PROC_UNUSED(void,glIndexsv,(const GLshort *c))
++SDL_PROC_UNUSED(void,glIndexub,(GLubyte c))
++SDL_PROC_UNUSED(void,glIndexubv,(const GLubyte *c))
++SDL_PROC_UNUSED(void,glInitNames,(void))
++SDL_PROC_UNUSED(void,glInterleavedArrays,(GLenum format, GLsizei stride, const GLvoid *pointer))
++SDL_PROC_UNUSED(GLboolean,glIsEnabled,(GLenum cap))
++SDL_PROC_UNUSED(GLboolean,glIsList,(GLuint list))
++SDL_PROC_UNUSED(GLboolean,glIsTexture,(GLuint texture))
++SDL_PROC_UNUSED(void,glLightModelf,(GLenum pname, GLfloat param))
++SDL_PROC_UNUSED(void,glLightModelfv,(GLenum pname, const GLfloat *params))
++SDL_PROC_UNUSED(void,glLightModeli,(GLenum pname, GLint param))
++SDL_PROC_UNUSED(void,glLightModeliv,(GLenum pname, const GLint *params))
++SDL_PROC_UNUSED(void,glLightf,(GLenum light, GLenum pname, GLfloat param))
++SDL_PROC_UNUSED(void,glLightfv,(GLenum light, GLenum pname, const GLfloat *params))
++SDL_PROC_UNUSED(void,glLighti,(GLenum light, GLenum pname, GLint param))
++SDL_PROC_UNUSED(void,glLightiv,(GLenum light, GLenum pname, const GLint *params))
++SDL_PROC_UNUSED(void,glLineStipple,(GLint factor, GLushort pattern))
++SDL_PROC_UNUSED(void,glLineWidth,(GLfloat width))
++SDL_PROC_UNUSED(void,glListBase,(GLuint base))
++SDL_PROC(void,glLoadIdentity,(void))
++SDL_PROC_UNUSED(void,glLoadMatrixd,(const GLfloat *m))
++SDL_PROC_UNUSED(void,glLoadMatrixf,(const GLfloat *m))
++SDL_PROC_UNUSED(void,glLoadName,(GLuint name))
++SDL_PROC_UNUSED(void,glLogicOp,(GLenum opcode))
++SDL_PROC_UNUSED(void,glMap1d,(GLenum target, GLfloat u1, GLfloat u2, GLint stride, GLint order, const GLfloat *points))
++SDL_PROC_UNUSED(void,glMap1f,(GLenum target, GLfloat u1, GLfloat u2, GLint stride, GLint order, const GLfloat *points))
++SDL_PROC_UNUSED(void,glMap2d,(GLenum target, GLfloat u1, GLfloat u2, GLint ustride, GLint uorder, GLfloat v1, GLfloat v2, GLint vstride, GLint vorder, const GLfloat *points))
++SDL_PROC_UNUSED(void,glMap2f,(GLenum target, GLfloat u1, GLfloat u2, GLint ustride, GLint uorder, GLfloat v1, GLfloat v2, GLint vstride, GLint vorder, const GLfloat *points))
++SDL_PROC_UNUSED(void,glMapGrid1d,(GLint un, GLfloat u1, GLfloat u2))
++SDL_PROC_UNUSED(void,glMapGrid1f,(GLint un, GLfloat u1, GLfloat u2))
++SDL_PROC_UNUSED(void,glMapGrid2d,(GLint un, GLfloat u1, GLfloat u2, GLint vn, GLfloat v1, GLfloat v2))
++SDL_PROC_UNUSED(void,glMapGrid2f,(GLint un, GLfloat u1, GLfloat u2, GLint vn, GLfloat v1, GLfloat v2))
++SDL_PROC_UNUSED(void,glMaterialf,(GLenum face, GLenum pname, GLfloat param))
++SDL_PROC_UNUSED(void,glMaterialfv,(GLenum face, GLenum pname, const GLfloat *params))
++SDL_PROC_UNUSED(void,glMateriali,(GLenum face, GLenum pname, GLint param))
++SDL_PROC_UNUSED(void,glMaterialiv,(GLenum face, GLenum pname, const GLint *params))
++SDL_PROC(void,glMatrixMode,(GLenum mode))
++SDL_PROC_UNUSED(void,glMultMatrixd,(const GLfloat *m))
++SDL_PROC_UNUSED(void,glMultMatrixf,(const GLfloat *m))
++SDL_PROC_UNUSED(void,glNewList,(GLuint list, GLenum mode))
++SDL_PROC_UNUSED(void,glNormal3b,(GLbyte nx, GLbyte ny, GLbyte nz))
++SDL_PROC_UNUSED(void,glNormal3bv,(const GLbyte *v))
++SDL_PROC_UNUSED(void,glNormal3d,(GLfloat nx, GLfloat ny, GLfloat nz))
++SDL_PROC_UNUSED(void,glNormal3dv,(const GLfloat *v))
++SDL_PROC_UNUSED(void,glNormal3f,(GLfloat nx, GLfloat ny, GLfloat nz))
++SDL_PROC_UNUSED(void,glNormal3fv,(const GLfloat *v))
++SDL_PROC_UNUSED(void,glNormal3i,(GLint nx, GLint ny, GLint nz))
++SDL_PROC_UNUSED(void,glNormal3iv,(const GLint *v))
++SDL_PROC_UNUSED(void,glNormal3s,(GLshort nx, GLshort ny, GLshort nz))
++SDL_PROC_UNUSED(void,glNormal3sv,(const GLshort *v))
++SDL_PROC_UNUSED(void,glNormalPointer,(GLenum type, GLsizei stride, const GLvoid *pointer))
++SDL_PROC(void,glOrthof,(GLfloat left, GLfloat right, GLfloat bottom, GLfloat top, GLfloat zNear, GLfloat zFar))
++SDL_PROC_UNUSED(void,glPassThrough,(GLfloat token))
++SDL_PROC_UNUSED(void,glPixelMapfv,(GLenum map, GLsizei mapsize, const GLfloat *values))
++SDL_PROC_UNUSED(void,glPixelMapuiv,(GLenum map, GLsizei mapsize, const GLuint *values))
++SDL_PROC_UNUSED(void,glPixelMapusv,(GLenum map, GLsizei mapsize, const GLushort *values))
++SDL_PROC_UNUSED(void,glPixelStoref,(GLenum pname, GLfloat param))
++SDL_PROC(void,glPixelStorei,(GLenum pname, GLint param))
++SDL_PROC_UNUSED(void,glPixelTransferf,(GLenum pname, GLfloat param))
++SDL_PROC_UNUSED(void,glPixelTransferi,(GLenum pname, GLint param))
++SDL_PROC_UNUSED(void,glPixelZoom,(GLfloat xfactor, GLfloat yfactor))
++SDL_PROC_UNUSED(void,glPointSize,(GLfloat size))
++SDL_PROC_UNUSED(void,glPolygonMode,(GLenum face, GLenum mode))
++SDL_PROC_UNUSED(void,glPolygonOffset,(GLfloat factor, GLfloat units))
++SDL_PROC_UNUSED(void,glPolygonStipple,(const GLubyte *mask))
++SDL_PROC_UNUSED(void,glPopAttrib,(void))
++SDL_PROC_UNUSED(void,glPopClientAttrib,(void))
++SDL_PROC(void,glPopMatrix,(void))
++SDL_PROC_UNUSED(void,glPopName,(void))
++SDL_PROC_UNUSED(void,glPrioritizeTextures,(GLsizei n, const GLuint *textures, const GLclampf *priorities))
++SDL_PROC_UNUSED(void,glPushAttrib,(GLbitfield mask))
++SDL_PROC_UNUSED(void,glPushClientAttrib,(GLbitfield mask))
++SDL_PROC(void,glPushMatrix,(void))
++SDL_PROC_UNUSED(void,glPushName,(GLuint name))
++SDL_PROC_UNUSED(void,glRasterPos2d,(GLfloat x, GLfloat y))
++SDL_PROC_UNUSED(void,glRasterPos2dv,(const GLfloat *v))
++SDL_PROC_UNUSED(void,glRasterPos2f,(GLfloat x, GLfloat y))
++SDL_PROC_UNUSED(void,glRasterPos2fv,(const GLfloat *v))
++SDL_PROC_UNUSED(void,glRasterPos2i,(GLint x, GLint y))
++SDL_PROC_UNUSED(void,glRasterPos2iv,(const GLint *v))
++SDL_PROC_UNUSED(void,glRasterPos2s,(GLshort x, GLshort y))
++SDL_PROC_UNUSED(void,glRasterPos2sv,(const GLshort *v))
++SDL_PROC_UNUSED(void,glRasterPos3d,(GLfloat x, GLfloat y, GLfloat z))
++SDL_PROC_UNUSED(void,glRasterPos3dv,(const GLfloat *v))
++SDL_PROC_UNUSED(void,glRasterPos3f,(GLfloat x, GLfloat y, GLfloat z))
++SDL_PROC_UNUSED(void,glRasterPos3fv,(const GLfloat *v))
++SDL_PROC_UNUSED(void,glRasterPos3i,(GLint x, GLint y, GLint z))
++SDL_PROC_UNUSED(void,glRasterPos3iv,(const GLint *v))
++SDL_PROC_UNUSED(void,glRasterPos3s,(GLshort x, GLshort y, GLshort z))
++SDL_PROC_UNUSED(void,glRasterPos3sv,(const GLshort *v))
++SDL_PROC_UNUSED(void,glRasterPos4d,(GLfloat x, GLfloat y, GLfloat z, GLfloat w))
++SDL_PROC_UNUSED(void,glRasterPos4dv,(const GLfloat *v))
++SDL_PROC_UNUSED(void,glRasterPos4f,(GLfloat x, GLfloat y, GLfloat z, GLfloat w))
++SDL_PROC_UNUSED(void,glRasterPos4fv,(const GLfloat *v))
++SDL_PROC_UNUSED(void,glRasterPos4i,(GLint x, GLint y, GLint z, GLint w))
++SDL_PROC_UNUSED(void,glRasterPos4iv,(const GLint *v))
++SDL_PROC_UNUSED(void,glRasterPos4s,(GLshort x, GLshort y, GLshort z, GLshort w))
++SDL_PROC_UNUSED(void,glRasterPos4sv,(const GLshort *v))
++SDL_PROC_UNUSED(void,glReadBuffer,(GLenum mode))
++SDL_PROC_UNUSED(void,glReadPixels,(GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, GLvoid *pixels))
++SDL_PROC_UNUSED(void,glRectd,(GLfloat x1, GLfloat y1, GLfloat x2, GLfloat y2))
++SDL_PROC_UNUSED(void,glRectdv,(const GLfloat *v1, const GLfloat *v2))
++SDL_PROC_UNUSED(void,glRectf,(GLfloat x1, GLfloat y1, GLfloat x2, GLfloat y2))
++SDL_PROC_UNUSED(void,glRectfv,(const GLfloat *v1, const GLfloat *v2))
++SDL_PROC_UNUSED(void,glRecti,(GLint x1, GLint y1, GLint x2, GLint y2))
++SDL_PROC_UNUSED(void,glRectiv,(const GLint *v1, const GLint *v2))
++SDL_PROC_UNUSED(void,glRects,(GLshort x1, GLshort y1, GLshort x2, GLshort y2))
++SDL_PROC_UNUSED(void,glRectsv,(const GLshort *v1, const GLshort *v2))
++SDL_PROC_UNUSED(GLint,glRenderMode,(GLenum mode))
++SDL_PROC_UNUSED(void,glRotated,(GLfloat angle, GLfloat x, GLfloat y, GLfloat z))
++SDL_PROC_UNUSED(void,glRotatef,(GLfloat angle, GLfloat x, GLfloat y, GLfloat z))
++SDL_PROC_UNUSED(void,glScaled,(GLfloat x, GLfloat y, GLfloat z))
++SDL_PROC_UNUSED(void,glScalef,(GLfloat x, GLfloat y, GLfloat z))
++SDL_PROC_UNUSED(void,glScissor,(GLint x, GLint y, GLsizei width, GLsizei height))
++SDL_PROC_UNUSED(void,glSelectBuffer,(GLsizei size, GLuint *buffer))
++SDL_PROC_UNUSED(void,glShadeModel,(GLenum mode))
++SDL_PROC_UNUSED(void,glStencilFunc,(GLenum func, GLint ref, GLuint mask))
++SDL_PROC_UNUSED(void,glStencilMask,(GLuint mask))
++SDL_PROC_UNUSED(void,glStencilOp,(GLenum fail, GLenum zfail, GLenum zpass))
++SDL_PROC_UNUSED(void,glTexCoord1d,(GLfloat s))
++SDL_PROC_UNUSED(void,glTexCoord1dv,(const GLfloat *v))
++SDL_PROC_UNUSED(void,glTexCoord1f,(GLfloat s))
++SDL_PROC_UNUSED(void,glTexCoord1fv,(const GLfloat *v))
++SDL_PROC_UNUSED(void,glTexCoord1i,(GLint s))
++SDL_PROC_UNUSED(void,glTexCoord1iv,(const GLint *v))
++SDL_PROC_UNUSED(void,glTexCoord1s,(GLshort s))
++SDL_PROC_UNUSED(void,glTexCoord1sv,(const GLshort *v))
++SDL_PROC_UNUSED(void,glTexCoord2d,(GLfloat s, GLfloat t))
++SDL_PROC_UNUSED(void,glTexCoord2dv,(const GLfloat *v))
++SDL_PROC_UNUSED(void,glTexCoord2f,(GLfloat s, GLfloat t))
++SDL_PROC_UNUSED(void,glTexCoord2fv,(const GLfloat *v))
++SDL_PROC_UNUSED(void,glTexCoord2i,(GLint s, GLint t))
++SDL_PROC_UNUSED(void,glTexCoord2iv,(const GLint *v))
++SDL_PROC_UNUSED(void,glTexCoord2s,(GLshort s, GLshort t))
++SDL_PROC_UNUSED(void,glTexCoord2sv,(const GLshort *v))
++SDL_PROC_UNUSED(void,glTexCoord3d,(GLfloat s, GLfloat t, GLfloat r))
++SDL_PROC_UNUSED(void,glTexCoord3dv,(const GLfloat *v))
++SDL_PROC_UNUSED(void,glTexCoord3f,(GLfloat s, GLfloat t, GLfloat r))
++SDL_PROC_UNUSED(void,glTexCoord3fv,(const GLfloat *v))
++SDL_PROC_UNUSED(void,glTexCoord3i,(GLint s, GLint t, GLint r))
++SDL_PROC_UNUSED(void,glTexCoord3iv,(const GLint *v))
++SDL_PROC_UNUSED(void,glTexCoord3s,(GLshort s, GLshort t, GLshort r))
++SDL_PROC_UNUSED(void,glTexCoord3sv,(const GLshort *v))
++SDL_PROC_UNUSED(void,glTexCoord4d,(GLfloat s, GLfloat t, GLfloat r, GLfloat q))
++SDL_PROC_UNUSED(void,glTexCoord4dv,(const GLfloat *v))
++SDL_PROC_UNUSED(void,glTexCoord4f,(GLfloat s, GLfloat t, GLfloat r, GLfloat q))
++SDL_PROC_UNUSED(void,glTexCoord4fv,(const GLfloat *v))
++SDL_PROC_UNUSED(void,glTexCoord4i,(GLint s, GLint t, GLint r, GLint q))
++SDL_PROC_UNUSED(void,glTexCoord4iv,(const GLint *v))
++SDL_PROC_UNUSED(void,glTexCoord4s,(GLshort s, GLshort t, GLshort r, GLshort q))
++SDL_PROC_UNUSED(void,glTexCoord4sv,(const GLshort *v))
++SDL_PROC(void,glTexCoordPointer,(GLint size, GLenum type, GLsizei stride, const GLvoid *pointer))
++SDL_PROC(void,glTexEnvf,(GLenum target, GLenum pname, GLfloat param))
++SDL_PROC_UNUSED(void,glTexEnvfv,(GLenum target, GLenum pname, const GLfloat *params))
++SDL_PROC_UNUSED(void,glTexEnvi,(GLenum target, GLenum pname, GLint param))
++SDL_PROC_UNUSED(void,glTexEnviv,(GLenum target, GLenum pname, const GLint *params))
++SDL_PROC_UNUSED(void,glTexGend,(GLenum coord, GLenum pname, GLfloat param))
++SDL_PROC_UNUSED(void,glTexGendv,(GLenum coord, GLenum pname, const GLfloat *params))
++SDL_PROC_UNUSED(void,glTexGenf,(GLenum coord, GLenum pname, GLfloat param))
++SDL_PROC_UNUSED(void,glTexGenfv,(GLenum coord, GLenum pname, const GLfloat *params))
++SDL_PROC_UNUSED(void,glTexGeni,(GLenum coord, GLenum pname, GLint param))
++SDL_PROC_UNUSED(void,glTexGeniv,(GLenum coord, GLenum pname, const GLint *params))
++SDL_PROC_UNUSED(void,glTexImage1D,(GLenum target, GLint level, GLint internalformat, GLsizei width, GLint border, GLenum format, GLenum type, const GLvoid *pixels))
++SDL_PROC(void,glTexImage2D,(GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type, const GLvoid *pixels))
++SDL_PROC_UNUSED(void,glTexParameterf,(GLenum target, GLenum pname, GLfloat param))
++SDL_PROC_UNUSED(void,glTexParameterfv,(GLenum target, GLenum pname, const GLfloat *params))
++SDL_PROC(void,glTexParameteri,(GLenum target, GLenum pname, GLint param))
++SDL_PROC_UNUSED(void,glTexParameteriv,(GLenum target, GLenum pname, const GLint *params))
++SDL_PROC_UNUSED(void,glTexSubImage1D,(GLenum target, GLint level, GLint xoffset, GLsizei width, GLenum format, GLenum type, const GLvoid *pixels))
++SDL_PROC(void,glTexSubImage2D,(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLenum type, const GLvoid *pixels))
++SDL_PROC_UNUSED(void,glTranslated,(GLfloat x, GLfloat y, GLfloat z))
++SDL_PROC_UNUSED(void,glTranslatef,(GLfloat x, GLfloat y, GLfloat z))
++SDL_PROC_UNUSED(void,glVertex2d,(GLfloat x, GLfloat y))
++SDL_PROC_UNUSED(void,glVertex2dv,(const GLfloat *v))
++SDL_PROC_UNUSED(void,glVertex2f,(GLfloat x, GLfloat y))
++SDL_PROC_UNUSED(void,glVertex2fv,(const GLfloat *v))
++SDL_PROC_UNUSED(void,glVertex2i,(GLint x, GLint y))
++SDL_PROC_UNUSED(void,glVertex2iv,(const GLint *v))
++SDL_PROC_UNUSED(void,glVertex2s,(GLshort x, GLshort y))
++SDL_PROC_UNUSED(void,glVertex2sv,(const GLshort *v))
++SDL_PROC_UNUSED(void,glVertex3d,(GLfloat x, GLfloat y, GLfloat z))
++SDL_PROC_UNUSED(void,glVertex3dv,(const GLfloat *v))
++SDL_PROC_UNUSED(void,glVertex3f,(GLfloat x, GLfloat y, GLfloat z))
++SDL_PROC_UNUSED(void,glVertex3fv,(const GLfloat *v))
++SDL_PROC_UNUSED(void,glVertex3i,(GLint x, GLint y, GLint z))
++SDL_PROC_UNUSED(void,glVertex3iv,(const GLint *v))
++SDL_PROC_UNUSED(void,glVertex3s,(GLshort x, GLshort y, GLshort z))
++SDL_PROC_UNUSED(void,glVertex3sv,(const GLshort *v))
++SDL_PROC_UNUSED(void,glVertex4d,(GLfloat x, GLfloat y, GLfloat z, GLfloat w))
++SDL_PROC_UNUSED(void,glVertex4dv,(const GLfloat *v))
++SDL_PROC_UNUSED(void,glVertex4f,(GLfloat x, GLfloat y, GLfloat z, GLfloat w))
++SDL_PROC_UNUSED(void,glVertex4fv,(const GLfloat *v))
++SDL_PROC_UNUSED(void,glVertex4i,(GLint x, GLint y, GLint z, GLint w))
++SDL_PROC_UNUSED(void,glVertex4iv,(const GLint *v))
++SDL_PROC_UNUSED(void,glVertex4s,(GLshort x, GLshort y, GLshort z, GLshort w))
++SDL_PROC_UNUSED(void,glVertex4sv,(const GLshort *v))
++SDL_PROC(void,glVertexPointer,(GLint size, GLenum type, GLsizei stride, const GLvoid *pointer))
++SDL_PROC(void,glViewport,(GLint x, GLint y, GLsizei width, GLsizei height))
+Index: repo/src/video/x11/SDL_x11gles.c
+===================================================================
+--- /dev/null
++++ repo/src/video/x11/SDL_x11gles.c
+@@ -0,0 +1,504 @@
++/*
++    SDL - Simple DirectMedia Layer
++    Copyright (C) 1997-2009 Sam Lantinga
++
++    This library is free software; you can redistribute it and/or
++    modify it under the terms of the GNU Lesser General Public
++    License as published by the Free Software Foundation; either
++    version 2.1 of the License, or (at your option) any later version.
++
++    This library is distributed in the hope that it will be useful,
++    but WITHOUT ANY WARRANTY; without even the implied warranty of
++    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++    Lesser General Public License for more details.
++
++    You should have received a copy of the GNU Lesser General Public
++    License along with this library; if not, write to the Free Software
++    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
++
++    Sam Lantinga
++    slouken@libsdl.org
++*/
++#include "SDL_config.h"
++
++#include "SDL_x11video.h"
++#include "../../events/SDL_events_c.h"
++#include "SDL_x11gles_c.h"
++
++#ifndef DEFAULT_EGL
++#define DEFAULT_EGL "libEGL.so"
++#endif
++
++XVisualInfo *X11_GLES_GetVisual(_THIS)
++{
++#ifdef SDL_VIDEO_OPENGL_ES
++	/* 64 seems nice. */
++	EGLint attribs[64];
++	EGLint found_configs = 0;
++	int i;
++
++	/* load the gl driver from a default path */
++	if ( ! this->gl_config.driver_loaded ) {
++	        /* no driver has been loaded, use default (ourselves) */
++	        if ( X11_GLES_LoadLibrary(this, NULL) < 0 ) {
++		        return NULL;
++		}
++	}
++
++	/* TODO: Existing SDL_windowid; either get or change its visual. */
++
++#if 0
++    // Print out all of the available configs
++    EGLConfig Configs[256];
++    int Num;
++
++    memset(Configs, 0, sizeof(Configs));
++
++    this->gles_data->eglGetConfigs(egl_display, &Configs[0], sizeof(Configs) / sizeof(Configs[0]), &Num);
++
++    printf("Found %d configs\n\n", Num);
++
++    for (i = 0; i < Num; i++) {
++        int Val;
++
++        printf("\n[Config %d]\n", i);
++
++        char Names[][32] = {
++            "EGL_RED_SIZE",
++            "EGL_GREEN_SIZE",
++            "EGL_BLUE_SIZE",
++            "EGL_ALPHA_SIZE",
++            "EGL_BUFFER_SIZE",
++            "EGL_DEPTH_SIZE",
++            "EGL_STENCIL_SIZE",
++            "EGL_SAMPLE_BUFFERS",
++            "EGL_SAMPLES",
++            "EGL_RENDERABLE_TYPE",
++            "EGL_SURFACE_TYPE",
++			"EGL_NATIVE_VISUAL_ID",
++        };
++        int ID[] = {
++            EGL_RED_SIZE,
++            EGL_GREEN_SIZE,
++            EGL_BLUE_SIZE,
++            EGL_ALPHA_SIZE,
++            EGL_BUFFER_SIZE,
++            EGL_DEPTH_SIZE,
++            EGL_STENCIL_SIZE,
++            EGL_SAMPLE_BUFFERS,
++            EGL_SAMPLES,
++            EGL_RENDERABLE_TYPE,
++            EGL_SURFACE_TYPE,
++			EGL_NATIVE_VISUAL_ID,
++        };
++
++        int j;
++        for (j = 0; j < sizeof(ID) / sizeof(int); j++) {
++            this->gles_data->eglGetConfigAttrib(egl_display, Configs[i], ID[j], &Val);
++
++            printf("%s = 0x%x\n", Names[j], Val);
++        }
++    }
++
++#endif
++	i = 0;
++
++    if (this->gl_config.red_size) {
++    	attribs[i++] = EGL_RED_SIZE;
++	    attribs[i++] = this->gl_config.red_size;
++    }
++
++    if (this->gl_config.green_size) {
++    	attribs[i++] = EGL_GREEN_SIZE;
++	    attribs[i++] = this->gl_config.green_size;
++    }
++
++    if (this->gl_config.blue_size) {
++    	attribs[i++] = EGL_BLUE_SIZE;
++	    attribs[i++] = this->gl_config.blue_size;
++    }
++
++	if( this->gl_config.alpha_size ) {
++		attribs[i++] = EGL_ALPHA_SIZE;
++		attribs[i++] = this->gl_config.alpha_size;
++	}
++
++	if( this->gl_config.buffer_size ) {
++		attribs[i++] = EGL_BUFFER_SIZE;
++		attribs[i++] = this->gl_config.buffer_size;
++	}
++
++    if (this->gl_config.depth_size) {
++    	attribs[i++] = EGL_DEPTH_SIZE;
++	    attribs[i++] = this->gl_config.depth_size;
++    }
++
++	if( this->gl_config.stencil_size ) {
++		attribs[i++] = EGL_STENCIL_SIZE;
++		attribs[i++] = this->gl_config.stencil_size;
++	}
++
++	if( this->gl_config.multisamplebuffers ) {
++		attribs[i++] = EGL_SAMPLE_BUFFERS;
++		attribs[i++] = this->gl_config.multisamplebuffers;
++	}
++
++	if( this->gl_config.multisamplesamples ) {
++		attribs[i++] = EGL_SAMPLES;
++		attribs[i++] = this->gl_config.multisamplesamples;
++	}
++
++    if(this->gl_config.major_version == 2) {
++        attribs[i++] = EGL_RENDERABLE_TYPE;
++        attribs[i++] = EGL_OPENGL_ES2_BIT;
++    }
++
++	int SurfaceTypeIndex = i;
++
++	attribs[i++] = EGL_SURFACE_TYPE;
++	attribs[i++] = EGL_WINDOW_BIT;
++
++	attribs[i++] = EGL_NONE;
++
++	if (this->gles_data->eglChooseConfig(egl_display, attribs,
++		&egl_config, 1, &found_configs) == EGL_FALSE ||
++		found_configs == 0) {
++
++		SDL_SetError("Couldn't find a matching EGL configuration");
++		return NULL;
++	}
++
++	EGLint value;
++	VisualID visualid;
++
++	this->gles_data->eglGetConfigAttrib(egl_display, egl_config, EGL_NATIVE_VISUAL_ID, &value);
++	visualid = value;
++	if (visualid) {
++		XVisualInfo template = { .visualid = visualid };
++        int count = 0;
++        egl_visualinfo = XGetVisualInfo(GFX_Display, VisualIDMask, &template, &count);
++		return egl_visualinfo;
++	}
++
++	SDL_SetError("Unable to find a matching X visual for EGL configuration");
++	return NULL;
++#else
++	SDL_SetError("X11 driver not configured with OpenGL ES");
++	return NULL;
++#endif
++}
++
++int X11_GLES_CreateWindow(_THIS, int w, int h)
++{
++	int retval;
++
++#if SDL_VIDEO_OPENGL_ES
++	XSetWindowAttributes attributes;
++	unsigned long mask;
++	unsigned long black;
++
++	black = (egl_visualinfo->visual == DefaultVisual(SDL_Display,
++						 	SDL_Screen))
++	       	? BlackPixel(SDL_Display, SDL_Screen) : 0;
++	attributes.background_pixel = black;
++	attributes.border_pixel = black;
++	attributes.colormap = SDL_XColorMap;
++	mask = CWBackPixel | CWBorderPixel | CWColormap;
++
++	SDL_Window = XCreateWindow(SDL_Display, WMwindow,
++			0, 0, w, h, 0, egl_visualinfo->depth,
++			InputOutput, egl_visualinfo->visual,
++			mask, &attributes);
++	if ( !SDL_Window ) {
++		SDL_SetError("Could not create window");
++		return -1;
++	}
++	XFlush(SDL_Display);
++	retval = 0;
++#else
++	SDL_SetError("X11 driver not configured with OpenGL ES");
++	retval = -1;
++#endif
++	return(retval);
++}
++
++int X11_GLES_CreateContext(_THIS)
++{
++	int retval;
++
++	/* Need to wait for window to be created first. */
++	XSync( GFX_Display, False );
++
++#if SDL_VIDEO_OPENGL_ES
++	EGLint context_attribs[] = {EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE};
++
++	if (this->gl_config.major_version == 2)
++		egl_context = this->gles_data->eglCreateContext(egl_display,
++			egl_config, EGL_NO_CONTEXT, context_attribs);
++    else
++		egl_context = this->gles_data->eglCreateContext(egl_display,
++			egl_config, EGL_NO_CONTEXT, NULL);
++
++	if (egl_context == EGL_NO_CONTEXT) {
++		SDL_SetError("Could not create EGL context");
++		return -1;
++	}
++
++	egl_window = this->gles_data->eglCreateWindowSurface(egl_display, egl_config, (EGLNativeWindowType)SDL_Window, NULL);
++
++	if (egl_window == EGL_NO_SURFACE) {
++		SDL_SetError("Could not create GLES window (error 0x%x\n)", this->gles_data->eglGetError());
++		return -1;
++	}
++
++	if ( X11_GLES_MakeCurrent(this) < 0) {
++		return -1;
++	}
++
++	egl_active = 1;
++#else
++	SDL_SetError("X11 driver not configured with OpenGL ES");
++#endif
++
++	if ( egl_active ) {
++		retval = 0;
++	} else {
++		retval = -1;
++	}
++	return(retval);
++}
++
++void X11_GLES_Shutdown(_THIS)
++{
++#if SDL_VIDEO_OPENGL_ES
++	/* Clean up OpenGL ES and EGL state */
++	if (egl_active) {
++		this->gles_data->eglMakeCurrent(egl_display, EGL_NO_SURFACE,
++		                                EGL_NO_SURFACE, EGL_NO_CONTEXT);
++		if (egl_context) {
++			this->gles_data->eglDestroyContext(egl_display, egl_context);
++			egl_context = EGL_NO_CONTEXT;
++		}
++		if (egl_window) {
++			this->gles_data->eglDestroySurface(egl_display, egl_window);
++			egl_window = EGL_NO_SURFACE;
++		}
++		egl_active = 0;
++	}
++#endif /* SDL_VIDEO_OPENGL_ES */
++}
++
++#if SDL_VIDEO_OPENGL_ES
++
++/* Make the current context active */
++int X11_GLES_MakeCurrent(_THIS)
++{
++	int retval;
++
++	if ( !this->gles_data->eglMakeCurrent(egl_display, egl_window, egl_window, egl_context) ) {
++		SDL_SetError("Unable to make EGL context current (error 0x%x)", this->gles_data->eglGetError());
++		return -1;
++	}
++
++    if(this->gl_config.swap_control != -1) {
++        this->gles_data->eglSwapInterval(egl_display, this->gl_config.swap_control);
++    }
++
++	return 0;
++}
++
++/* Get attribute data from EGL. */
++int X11_GLES_GetAttribute(_THIS, SDL_GLattr attr, int* value)
++{
++	EGLint attrib = EGL_NONE;
++
++	switch( attr ) {
++	    case SDL_GL_RED_SIZE:
++		attrib = EGL_RED_SIZE;
++		break;
++	    case SDL_GL_GREEN_SIZE:
++		attrib = EGL_GREEN_SIZE;
++		break;
++	    case SDL_GL_BLUE_SIZE:
++		attrib = EGL_BLUE_SIZE;
++		break;
++	    case SDL_GL_ALPHA_SIZE:
++		attrib = EGL_ALPHA_SIZE;
++		break;
++	    case SDL_GL_BUFFER_SIZE:
++		attrib = EGL_BUFFER_SIZE;
++		break;
++	    case SDL_GL_DEPTH_SIZE:
++		attrib = EGL_DEPTH_SIZE;
++		break;
++	    case SDL_GL_STENCIL_SIZE:
++		attrib = EGL_STENCIL_SIZE;
++		break;
++ 	    case SDL_GL_MULTISAMPLEBUFFERS:
++ 		attrib = EGL_SAMPLE_BUFFERS;
++ 		break;
++ 	    case SDL_GL_MULTISAMPLESAMPLES:
++ 		attrib = EGL_SAMPLES;
++ 		break;
++	    default:
++		SDL_SetError("OpenGL ES attribute is unsupported on this system");
++		return -1;
++	}
++
++	this->gles_data->eglGetConfigAttrib(egl_display, egl_config, attrib, value);
++
++	return 0;
++}
++
++void X11_GLES_SwapBuffers(_THIS)
++{
++	this->gles_data->eglSwapBuffers(egl_display, egl_window);
++}
++
++#endif /* SDL_VIDEO_OPENGL_ES */
++
++void X11_GLES_UnloadLibrary(_THIS)
++{
++#ifdef SDL_VIDEO_OPENGL_ES
++	if ( this->gl_config.driver_loaded ) {
++		this->gles_data->eglTerminate(egl_display);
++
++		dlclose(this->gles_data->egl_handle);
++        this->gles_data->egl_handle = NULL;
++
++		this->gles_data->eglGetProcAddress = NULL;
++		this->gles_data->eglGetError = NULL;
++		this->gles_data->eglChooseConfig = NULL;
++		this->gles_data->eglCreateContext = NULL;
++		this->gles_data->eglCreateWindowSurface = NULL;
++		this->gles_data->eglCreatePbufferSurface = NULL;
++		this->gles_data->eglCreatePixmapSurface = NULL;
++		this->gles_data->eglDestroyContext = NULL;
++		this->gles_data->eglDestroySurface = NULL;
++		this->gles_data->eglMakeCurrent = NULL;
++		this->gles_data->eglSwapBuffers = NULL;
++		this->gles_data->eglSwapInterval = NULL;
++		this->gles_data->eglCopyBuffers = NULL;
++		this->gles_data->eglGetDisplay = NULL;
++		this->gles_data->eglTerminate = NULL;
++		this->gles_data->eglSurfaceAttrib = NULL;
++		this->gles_data->eglQuerySurface = NULL;
++
++		this->gl_config.driver_loaded = 0;
++	}
++#endif
++}
++
++#if SDL_VIDEO_OPENGL_ES
++
++#define OPENGL_REQUIRS_DLOPEN
++#if defined(OPENGL_REQUIRS_DLOPEN) && defined(SDL_LOADSO_DLOPEN)
++#include <dlfcn.h>
++#define GL_LoadObject(X)	dlopen(X, (RTLD_NOW|RTLD_GLOBAL))
++#define GL_LoadFunction		dlsym
++#define GL_UnloadObject		dlclose
++#else
++#define GL_LoadObject	SDL_LoadObject
++#define GL_LoadFunction	SDL_LoadFunction
++#define GL_UnloadObject	SDL_UnloadObject
++#endif
++
++/*
++ *  A macro for loading a function pointer with dlsym
++ */
++#define LOAD_FUNC(NAME) \
++	this->gles_data->NAME = GL_LoadFunction(handle, #NAME); \
++	if (!this->gles_data->NAME) \
++	{ \
++		SDL_SetError("Could not retrieve function " #NAME); \
++		return -1; \
++	}
++
++/* Passing a NULL path means load pointers from the application */
++int X11_GLES_LoadLibrary(_THIS, const char* path)
++{
++	void* handle = NULL;
++
++	if ( egl_active ) {
++		SDL_SetError("OpenGL ES context already created");
++		return -1;
++	}
++
++	if ( path == NULL ) {
++		path = SDL_getenv("SDL_VIDEO_EGL_DRIVER");
++		if ( path == NULL ) {
++			path = DEFAULT_EGL;
++		}
++	}
++
++	handle = GL_LoadObject(path);
++	if ( handle == NULL ) {
++#if defined(OPENGL_REQUIRS_DLOPEN) && defined(SDL_LOADSO_DLOPEN)
++		SDL_SetError("Failed loading %s", path);
++#else
++		/* SDL_LoadObject() will call SDL_SetError() for us. */
++#endif
++		return -1;
++	}
++
++	/* Unload the old driver and reset the pointers */
++	X11_GLES_UnloadLibrary(this);
++
++    /* Load EGL function pointers */
++    LOAD_FUNC(eglGetError);
++    LOAD_FUNC(eglGetDisplay);
++    LOAD_FUNC(eglInitialize);
++    LOAD_FUNC(eglTerminate);
++    LOAD_FUNC(eglGetProcAddress);
++    LOAD_FUNC(eglChooseConfig);
++    LOAD_FUNC(eglGetConfigs);
++    LOAD_FUNC(eglGetConfigAttrib);
++    LOAD_FUNC(eglCreateContext);
++    LOAD_FUNC(eglDestroyContext);
++    LOAD_FUNC(eglCreateWindowSurface);
++    LOAD_FUNC(eglCreatePbufferSurface);
++    LOAD_FUNC(eglCreatePixmapSurface);
++    LOAD_FUNC(eglDestroySurface);
++    LOAD_FUNC(eglMakeCurrent);
++    LOAD_FUNC(eglSwapBuffers);
++    LOAD_FUNC(eglSwapInterval);
++    LOAD_FUNC(eglCopyBuffers);
++    LOAD_FUNC(eglSurfaceAttrib);
++    LOAD_FUNC(eglQuerySurface);
++
++	/* Initialize EGL */
++	egl_display = this->gles_data->eglGetDisplay((EGLNativeDisplayType)GFX_Display);
++
++	if (!egl_display) {
++		SDL_SetError("Could not get EGL display");
++		return -1;
++	}
++
++	if (this->gles_data->eglInitialize(egl_display, NULL, NULL) != EGL_TRUE) {
++		SDL_SetError("Could not initialize EGL");
++		return -1;
++	}
++
++	this->gles_data->egl_handle = handle;
++	this->gl_config.driver_loaded = 1;
++	if ( path ) {
++		SDL_strlcpy(this->gl_config.driver_path, path,
++			SDL_arraysize(this->gl_config.driver_path));
++	} else {
++		*this->gl_config.driver_path = '\0';
++	}
++	return 0;
++}
++
++void *X11_GLES_GetProcAddress(_THIS, const char* proc)
++{
++	void* handle;
++
++	handle = this->gles_data->egl_handle;
++	if ( this->gles_data->eglGetProcAddress ) {
++		return this->gles_data->eglGetProcAddress(proc);
++	}
++	return GL_LoadFunction(handle, proc);
++}
++
++#endif /* SDL_VIDEO_OPENGL_ES */
+Index: repo/src/video/x11/SDL_x11gles_c.h
+===================================================================
+--- /dev/null
++++ repo/src/video/x11/SDL_x11gles_c.h
+@@ -0,0 +1,118 @@
++/*
++    SDL - Simple DirectMedia Layer
++    Copyright (C) 1997-2009 Sam Lantinga
++
++    This library is free software; you can redistribute it and/or
++    modify it under the terms of the GNU Lesser General Public
++    License as published by the Free Software Foundation; either
++    version 2.1 of the License, or (at your option) any later version.
++
++    This library is distributed in the hope that it will be useful,
++    but WITHOUT ANY WARRANTY; without even the implied warranty of
++    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++    Lesser General Public License for more details.
++
++    You should have received a copy of the GNU Lesser General Public
++    License along with this library; if not, write to the Free Software
++    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
++
++    Sam Lantinga
++    slouken@libsdl.org
++*/
++#include "SDL_config.h"
++
++#if SDL_VIDEO_OPENGL_ES
++#include <EGL/egl.h>
++#include "SDL_loadso.h"
++#endif
++
++#include "../SDL_sysvideo.h"
++
++struct SDL_PrivateGLESData {
++    int egl_active; /* to stop switching drivers while we have a valid context */
++
++#if SDL_VIDEO_OPENGL_ES
++	void *egl_handle;
++
++	EGLDisplay egl_display;
++	EGLContext egl_context;
++	EGLSurface egl_window;
++	EGLConfig  egl_config;
++
++    XVisualInfo* egl_visualinfo; /* XVisualInfo* returned by eglChooseConfig */
++
++	EGLint (*eglGetError)(void);
++
++	EGLDisplay (*eglGetDisplay) (NativeDisplayType display);
++	EGLBoolean (*eglInitialize) (EGLDisplay dpy, EGLint *major, EGLint *minor);
++	EGLBoolean (*eglTerminate) (EGLDisplay dpy);
++
++	void * (*eglGetProcAddress)(const GLubyte *procName);
++
++	EGLBoolean (*eglChooseConfig) (EGLDisplay dpy,
++                                   const EGLint *attrib_list,
++                                   EGLConfig *configs,
++                                   EGLint config_size,
++                                   EGLint *num_config);
++
++	EGLContext (*eglCreateContext) (EGLDisplay dpy,
++	                                EGLConfig config,
++	                                EGLContext share_list,
++	                                const EGLint *attrib_list);
++
++	EGLBoolean (*eglDestroyContext) (EGLDisplay dpy, EGLContext ctx);
++
++	EGLSurface (*eglCreateWindowSurface) (EGLDisplay dpy,
++	                                      EGLConfig config,
++	                                      NativeWindowType window,
++	                                      const EGLint *attrib_list);
++	EGLSurface (*eglCreatePbufferSurface) (EGLDisplay dpy, EGLConfig config,
++	                                       const EGLint *attrib_list);
++	EGLSurface (*eglCreatePixmapSurface) (EGLDisplay dpy, EGLConfig config,
++	                                      EGLNativePixmapType pixmap,
++	                                      const EGLint *attrib_list);
++
++	EGLBoolean (*eglDestroySurface) (EGLDisplay dpy, EGLSurface surface);
++
++	EGLBoolean (*eglMakeCurrent) (EGLDisplay dpy, EGLSurface draw,
++	                              EGLSurface read, EGLContext ctx);
++
++	EGLBoolean (*eglSwapBuffers) (EGLDisplay dpy, EGLSurface draw);
++	EGLBoolean (*eglSwapInterval) (EGLDisplay dpy, EGLint interval);
++	EGLBoolean (*eglCopyBuffers) (EGLDisplay dpy, EGLSurface surface, EGLNativePixmapType target);
++
++	const char *(*eglQueryString) (EGLDisplay dpy, EGLint name);
++
++	EGLBoolean (*eglGetConfigs) (EGLDisplay dpy, EGLConfig *configs,
++                                      EGLint config_size, EGLint *num_config);
++
++	EGLBoolean (*eglGetConfigAttrib) (EGLDisplay dpy, EGLConfig config,
++                                      EGLint attribute, EGLint *value);
++
++	EGLBoolean (*eglSurfaceAttrib) (EGLDisplay dpy, EGLSurface surface, EGLint attribute, EGLint value);
++	EGLBoolean (*eglQuerySurface) (EGLDisplay dpy, EGLSurface surface, EGLint attribute, EGLint *value);
++#endif /* SDL_VIDEO_OPENGL_ES */
++};
++
++/* Direct variable names */
++#define egl_active      (this->gles_data->egl_active)
++#define egl_visualinfo  (this->gles_data->egl_visualinfo)
++#define egl_display     (this->gles_data->egl_display)
++#define egl_config      (this->gles_data->egl_config)
++#define egl_context     (this->gles_data->egl_context)
++#define egl_window      (this->gles_data->egl_window)
++
++/* OpenGL ES functions */
++XVisualInfo *X11_GLES_GetVisual(_THIS);
++extern int X11_GLES_CreateWindow(_THIS, int w, int h);
++extern int X11_GLES_CreateContext(_THIS);
++extern void X11_GLES_Shutdown(_THIS);
++#if SDL_VIDEO_OPENGL_ES
++extern int X11_GLES_MakeCurrent(_THIS);
++extern int X11_GLES_GetAttribute(_THIS, SDL_GLattr attrib, int* value);
++extern void X11_GLES_SwapBuffers(_THIS);
++extern int X11_GLES_LoadLibrary(_THIS, const char* path);
++extern void *X11_GLES_GetProcAddress(_THIS, const char* proc);
++#endif
++extern void X11_GLES_UnloadLibrary(_THIS);
++
+Index: repo/src/video/x11/SDL_x11video.c
+===================================================================
+--- repo.orig/src/video/x11/SDL_x11video.c
++++ repo/src/video/x11/SDL_x11video.c
+@@ -51,6 +51,7 @@
+ #include "SDL_x11image_c.h"
+ #include "SDL_x11yuv_c.h"
+ #include "SDL_x11gl_c.h"
++#include "SDL_x11gles_c.h"
+ #include "SDL_x11gamma_c.h"
+ #include "../blank_cursor.h"
+ 
+@@ -99,6 +100,9 @@ static void X11_DeleteDevice(SDL_VideoDe
+ 		if ( device->gl_data ) {
+ 			SDL_free(device->gl_data);
+ 		}
++		if ( device->gles_data ) {
++			SDL_free(device->gles_data);
++		}
+ 		SDL_free(device);
+ 		SDL_X11_UnloadSymbols();
+ 	}
+@@ -117,15 +121,18 @@ static SDL_VideoDevice *X11_CreateDevice
+ 					SDL_malloc((sizeof *device->hidden));
+ 			device->gl_data = (struct SDL_PrivateGLData *)
+ 					SDL_malloc((sizeof *device->gl_data));
++			device->gles_data = (struct SDL_PrivateGLESData *)
++					SDL_malloc((sizeof *device->gles_data));
+ 		}
+ 		if ( (device == NULL) || (device->hidden == NULL) ||
+-		                         (device->gl_data == NULL) ) {
++		     (device->gl_data == NULL) || device->gles_data == NULL ) {
+ 			SDL_OutOfMemory();
+ 			X11_DeleteDevice(device); /* calls SDL_X11_UnloadSymbols(). */
+ 			return(0);
+ 		}
+ 		SDL_memset(device->hidden, 0, (sizeof *device->hidden));
+ 		SDL_memset(device->gl_data, 0, (sizeof *device->gl_data));
++		SDL_memset(device->gles_data, 0, (sizeof *device->gles_data));
+ 
+ #if SDL_VIDEO_OPENGL_GLX
+ 		device->gl_data->swap_interval = -1;
+@@ -166,6 +173,13 @@ static SDL_VideoDevice *X11_CreateDevice
+ 		device->GL_MakeCurrent = X11_GL_MakeCurrent;
+ 		device->GL_SwapBuffers = X11_GL_SwapBuffers;
+ #endif
++#if SDL_VIDEO_OPENGL_ES
++		device->GLES_LoadLibrary = X11_GLES_LoadLibrary;
++		device->GLES_GetProcAddress = X11_GLES_GetProcAddress;
++		device->GLES_GetAttribute = X11_GLES_GetAttribute;
++		device->GLES_MakeCurrent = X11_GLES_MakeCurrent;
++		device->GLES_SwapBuffers = X11_GLES_SwapBuffers;
++#endif
+ 		device->SetCaption = X11_SetCaption;
+ 		device->SetIcon = X11_SetIcon;
+ 		device->IconifyWindow = X11_IconifyWindow;
+@@ -713,9 +727,10 @@ static void X11_DestroyWindow(_THIS, SDL
+ {
+ 	/* Clean up OpenGL */
+ 	if ( screen ) {
+-		screen->flags &= ~(SDL_OPENGL|SDL_OPENGLBLIT);
++		screen->flags &= ~(SDL_OPENGL|SDL_OPENGLBLIT|SDL_OPENGLES|SDL_OPENGLESBLIT);
+ 	}
+ 	X11_GL_Shutdown(this);
++	X11_GLES_Shutdown(this);
+ 
+ 	if ( ! SDL_windowid ) {
+ 		/* Hide the managed window */
+@@ -914,7 +929,16 @@ static int X11_CreateWindow(_THIS, SDL_S
+ 	}
+ 
+ 	/* find out which visual we are going to use */
+-	if ( flags & SDL_OPENGL ) {
++	if ( flags & SDL_OPENGLES ) {
++		XVisualInfo *vi;
++
++		vi = X11_GLES_GetVisual(this);
++		if( !vi ) {
++			return -1;
++		}
++		vis = vi->visual;
++		depth = vi->depth;
++	} else if ( flags & SDL_OPENGL ) {
+ 		XVisualInfo *vi;
+ 
+ 		vi = X11_GL_GetVisual(this);
+@@ -1027,7 +1051,11 @@ static int X11_CreateWindow(_THIS, SDL_S
+ 
+ 	/* Create (or use) the X11 display window */
+ 	if ( !SDL_windowid ) {
+-		if ( flags & SDL_OPENGL ) {
++		if ( flags & SDL_OPENGLES ) {
++			if ( X11_GLES_CreateWindow(this, w, h) < 0 ) {
++				return(-1);
++			}
++		} else if ( flags & SDL_OPENGL ) {
+ 			if ( X11_GL_CreateWindow(this, w, h) < 0 ) {
+ 				return(-1);
+ 			}
+@@ -1050,7 +1078,13 @@ static int X11_CreateWindow(_THIS, SDL_S
+ 					| PointerMotionMask | ExposureMask ));
+ 	}
+ 	/* Create the graphics context here, once we have a window */
+-	if ( flags & SDL_OPENGL ) {
++	if ( flags & SDL_OPENGLES ) {
++		if ( X11_GLES_CreateContext(this) < 0 ) {
++			return(-1);
++		} else {
++			screen->flags |= SDL_OPENGLES;
++		}
++	} else if ( flags & SDL_OPENGL ) {
+ 		if ( X11_GL_CreateContext(this) < 0 ) {
+ 			return(-1);
+ 		} else {
+@@ -1069,7 +1103,7 @@ static int X11_CreateWindow(_THIS, SDL_S
+ 	}
+ 
+ 	/* Set our colormaps when not setting a GL mode */
+-	if ( ! (flags & SDL_OPENGL) ) {
++	if ( ! (flags & (SDL_OPENGL|SDL_OPENGLES)) ) {
+ 		XSetWindowColormap(SDL_Display, SDL_Window, SDL_XColorMap);
+ 		if( !SDL_windowid ) {
+ 		    XSetWindowColormap(SDL_Display, FSwindow, SDL_XColorMap);
+@@ -1159,7 +1193,9 @@ SDL_Surface *X11_SetVideoMode(_THIS, SDL
+ 
+ 	/* Set up the X11 window */
+ 	saved_flags = current->flags;
+-	if ( (SDL_Window) && ((saved_flags&SDL_OPENGL) == (flags&SDL_OPENGL))
++	if ( (SDL_Window)
++	      && ((saved_flags&SDL_OPENGL) == (flags&SDL_OPENGL))
++	      && ((saved_flags&SDL_OPENGLES) == (flags&SDL_OPENGLES))
+ 	      && (bpp == current->format->BitsPerPixel)
+           && ((saved_flags&SDL_NOFRAME) == (flags&SDL_NOFRAME)) ) {
+ 		if (X11_ResizeWindow(this, current, width, height, flags) < 0) {
+@@ -1202,8 +1238,9 @@ SDL_Surface *X11_SetVideoMode(_THIS, SDL
+ 	}
+ 
+ 	/* Set up the new mode framebuffer */
+-	if ( ((current->w != width) || (current->h != height)) ||
+-             ((saved_flags&SDL_OPENGL) != (flags&SDL_OPENGL)) ) {
++	if ( ((current->w != width) || (current->h != height))
++          || ((saved_flags&SDL_OPENGL) != (flags&SDL_OPENGL))
++          || ((saved_flags&SDL_OPENGLES) != (flags&SDL_OPENGLES)) ) {
+ 		current->w = width;
+ 		current->h = height;
+ 		current->pitch = SDL_CalculatePitch(current);
+@@ -1545,6 +1582,7 @@ void X11_VideoQuit(_THIS)
+ 
+ 		/* Unload GL library after X11 shuts down */
+ 		X11_GL_UnloadLibrary(this);
++		X11_GLES_UnloadLibrary(this);
+ 	}
+ 	if ( this->screen && (this->screen->flags & SDL_HWSURFACE) ) {
+ 		/* Direct screen access, no memory buffer */
+Index: repo/include/SDL_video.h
+===================================================================
+--- repo.orig/include/SDL_video.h
++++ repo/include/SDL_video.h
+@@ -141,6 +141,8 @@ typedef struct SDL_Surface {
+ #define SDL_FULLSCREEN	0x80000000	/**< Surface is a full screen display */
+ #define SDL_OPENGL      0x00000002      /**< Create an OpenGL rendering context */
+ #define SDL_OPENGLBLIT	0x0000000A	/**< Create an OpenGL rendering context and use it for blitting */
++#define SDL_OPENGLES    0x00000040  /* Create an OpenGL-ES rendering context */
++#define SDL_OPENGLESBLIT 0x00000048 /* Create an OpenGL-ES rendering context and use it for blitting  */
+ #define SDL_RESIZABLE	0x00000010	/**< This video mode may be resized */
+ #define SDL_NOFRAME	0x00000020	/**< No window caption or edge frame */
+ /*@}*/
+@@ -244,6 +246,9 @@ typedef enum {
+     SDL_GL_MULTISAMPLEBUFFERS,
+     SDL_GL_MULTISAMPLESAMPLES,
+     SDL_GL_ACCELERATED_VISUAL,
++	SDL_GL_RETAINED_BACKING,
++	SDL_GL_CONTEXT_MAJOR_VERSION,
++	SDL_GL_CONTEXT_MINOR_VERSION,
+     SDL_GL_SWAP_CONTROL
+ } SDL_GLattr;
+ 
+@@ -874,6 +879,29 @@ extern DECLSPEC void SDLCALL SDL_GL_Unlo
+ 
+ /*@}*/
+ 
++/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
++/** @name OpenGL ES support functions.                                          */ /*@{*/
++/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
++
++/**
++ * Dynamically load an OpenGL ES driver, if SDL is built with dynamic GL.
++ *
++ * SDL links normally with the OpenGL ES library on your system by default,
++ * but you can compile it to dynamically load the GL driver at runtime.
++ * If you do this, you need to retrieve all of the OpenGL ES functions used in
++ * your program from the dynamic library using SDL_GLES_GetProcAddress().
++ *
++ * This is disabled in default builds of SDL.
++*/
++extern DECLSPEC int SDLCALL SDL_GLES_LoadLibrary(const char *path);
++
++/**
++ * Get the address of an OpenGL ES (extension) function
++ */
++extern DECLSPEC void * SDLCALL SDL_GLES_GetProcAddress(const char* proc);
++
++/*@}*/
++
+ /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
+ /** @name Window Manager Functions                                           */
+ /** These functions allow interaction with the window manager, if any.       */ /*@{*/
+Index: repo/configure.in
+===================================================================
+--- repo.orig/configure.in
++++ repo/configure.in
+@@ -1737,6 +1737,30 @@ AC_HELP_STRING([--enable-osmesa-shared],
+     fi
+ }
+ 
++dnl Check to see if OpenGL support is desired
++AC_ARG_ENABLE(video-opengl-es,
++AC_HELP_STRING([--enable-video-opengl-es], [include OpenGL ES context creation [[default=yes]]]),
++              , enable_video_opengl_es=yes)
++
++dnl Find OpenGL
++CheckEGL()
++{
++    if test x$enable_video = xyes -a x$enable_video_opengl_es = xyes; then
++        AC_MSG_CHECKING(for OpenGL ES (EGL) support)
++        video_opengl_es=no
++        AC_TRY_COMPILE([
++         #include <EGL/egl.h>
++        ],[
++        ],[
++        video_opengl_es=yes
++        ])
++        AC_MSG_RESULT($video_opengl_es)
++        if test x$video_opengl_es = xyes; then
++            AC_DEFINE(SDL_VIDEO_OPENGL_ES)
++        fi
++    fi
++}
++
+ AC_ARG_ENABLE(screensaver,
+ AC_HELP_STRING([--enable-screensaver], [enable screensaver by default while any SDL application is running [[default=no]]]),
+               , enable_screensaver=no)
+@@ -2334,6 +2358,7 @@ case "$host" in
+         CheckQtopia
+         CheckPicoGUI
+         CheckOpenGLX11
++		CheckEGL
+         CheckInputEvents
+         CheckTslib
+         CheckUSBHID
+Index: repo/include/SDL_config.h.in
+===================================================================
+--- repo.orig/include/SDL_config.h.in
++++ repo/include/SDL_config.h.in
+@@ -300,6 +300,7 @@
+ #undef SDL_VIDEO_OPENGL_WGL
+ #undef SDL_VIDEO_OPENGL_OSMESA
+ #undef SDL_VIDEO_OPENGL_OSMESA_DYNAMIC
++#undef SDL_VIDEO_OPENGL_ES
+ 
+ /* Disable screensaver */
+ #undef SDL_VIDEO_DISABLE_SCREENSAVER
+Index: repo/include/SDL_opengles.h
+===================================================================
+--- /dev/null
++++ repo/include/SDL_opengles.h
+@@ -0,0 +1,1125 @@
++#ifndef __SDLgles_h_
++#define __SDLgles_h_
++
++/* $Revision: 7172 $ on $Date:: 2009-01-09 11:17:41 -0800 #$ */
++
++#define GL_APIENTRY
++#define GL_API
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++/*
++ * This document is licensed under the SGI Free Software B License Version
++ * 2.0. For details, see http://oss.sgi.com/projects/FreeB/ .
++ */
++
++typedef void             GLvoid;
++typedef unsigned int     GLenum;
++typedef unsigned char    GLboolean;
++typedef unsigned int     GLbitfield;
++typedef signed char      GLbyte;
++typedef short            GLshort;
++typedef int              GLint;
++typedef int              GLsizei;
++typedef unsigned char    GLubyte;
++typedef unsigned short   GLushort;
++typedef unsigned int     GLuint;
++typedef float            GLfloat;
++typedef float            GLclampf;
++typedef int              GLfixed;
++typedef int              GLclampx;
++
++typedef int              GLintptr;
++typedef int              GLsizeiptr;
++
++
++/*************************************************************/
++
++/* OpenGL ES core versions */
++#define GL_VERSION_ES_CM_1_0          1
++#define GL_VERSION_ES_CL_1_0          1
++#define GL_VERSION_ES_CM_1_1          1
++#define GL_VERSION_ES_CL_1_1          1
++#define GL_ES_VERSION_2_0             1
++
++/* ClearBufferMask */
++#define GL_DEPTH_BUFFER_BIT               0x00000100
++#define GL_STENCIL_BUFFER_BIT             0x00000400
++#define GL_COLOR_BUFFER_BIT               0x00004000
++
++/* Boolean */
++#define GL_FALSE                          0
++#define GL_TRUE                           1
++
++/* BeginMode */
++#define GL_POINTS                         0x0000
++#define GL_LINES                          0x0001
++#define GL_LINE_LOOP                      0x0002
++#define GL_LINE_STRIP                     0x0003
++#define GL_TRIANGLES                      0x0004
++#define GL_TRIANGLE_STRIP                 0x0005
++#define GL_TRIANGLE_FAN                   0x0006
++
++/* AlphaFunction */
++#define GL_NEVER                          0x0200
++#define GL_LESS                           0x0201
++#define GL_EQUAL                          0x0202
++#define GL_LEQUAL                         0x0203
++#define GL_GREATER                        0x0204
++#define GL_NOTEQUAL                       0x0205
++#define GL_GEQUAL                         0x0206
++#define GL_ALWAYS                         0x0207
++
++/* BlendingFactorDest */
++#define GL_ZERO                           0
++#define GL_ONE                            1
++#define GL_SRC_COLOR                      0x0300
++#define GL_ONE_MINUS_SRC_COLOR            0x0301
++#define GL_SRC_ALPHA                      0x0302
++#define GL_ONE_MINUS_SRC_ALPHA            0x0303
++#define GL_DST_ALPHA                      0x0304
++#define GL_ONE_MINUS_DST_ALPHA            0x0305
++
++/* BlendingFactorSrc */
++/*      GL_ZERO */
++/*      GL_ONE */
++#define GL_DST_COLOR                      0x0306
++#define GL_ONE_MINUS_DST_COLOR            0x0307
++#define GL_SRC_ALPHA_SATURATE             0x0308
++/*      GL_SRC_ALPHA */
++/*      GL_ONE_MINUS_SRC_ALPHA */
++/*      GL_DST_ALPHA */
++/*      GL_ONE_MINUS_DST_ALPHA */
++
++/* ClipPlaneName */
++#define GL_CLIP_PLANE0                    0x3000
++#define GL_CLIP_PLANE1                    0x3001
++#define GL_CLIP_PLANE2                    0x3002
++#define GL_CLIP_PLANE3                    0x3003
++#define GL_CLIP_PLANE4                    0x3004
++#define GL_CLIP_PLANE5                    0x3005
++
++/* ColorMaterialFace */
++/*      GL_FRONT_AND_BACK */
++
++/* ColorMaterialParameter */
++/*      GL_AMBIENT_AND_DIFFUSE */
++
++/* ColorPointerType */
++/*      GL_UNSIGNED_BYTE */
++/*      GL_FLOAT */
++/*      GL_FIXED */
++
++/* CullFaceMode */
++#define GL_FRONT                          0x0404
++#define GL_BACK                           0x0405
++#define GL_FRONT_AND_BACK                 0x0408
++
++/* DepthFunction */
++/*      GL_NEVER */
++/*      GL_LESS */
++/*      GL_EQUAL */
++/*      GL_LEQUAL */
++/*      GL_GREATER */
++/*      GL_NOTEQUAL */
++/*      GL_GEQUAL */
++/*      GL_ALWAYS */
++
++/* EnableCap */
++#define GL_FOG                            0x0B60
++#define GL_LIGHTING                       0x0B50
++#define GL_TEXTURE_2D                     0x0DE1
++#define GL_CULL_FACE                      0x0B44
++#define GL_ALPHA_TEST                     0x0BC0
++#define GL_BLEND                          0x0BE2
++#define GL_COLOR_LOGIC_OP                 0x0BF2
++#define GL_DITHER                         0x0BD0
++#define GL_STENCIL_TEST                   0x0B90
++#define GL_DEPTH_TEST                     0x0B71
++/*      GL_LIGHT0 */
++/*      GL_LIGHT1 */
++/*      GL_LIGHT2 */
++/*      GL_LIGHT3 */
++/*      GL_LIGHT4 */
++/*      GL_LIGHT5 */
++/*      GL_LIGHT6 */
++/*      GL_LIGHT7 */
++#define GL_POINT_SMOOTH                   0x0B10
++#define GL_LINE_SMOOTH                    0x0B20
++#define GL_SCISSOR_TEST                   0x0C11
++#define GL_COLOR_MATERIAL                 0x0B57
++#define GL_NORMALIZE                      0x0BA1
++#define GL_RESCALE_NORMAL                 0x803A
++#define GL_POLYGON_OFFSET_FILL            0x8037
++#define GL_VERTEX_ARRAY                   0x8074
++#define GL_NORMAL_ARRAY                   0x8075
++#define GL_COLOR_ARRAY                    0x8076
++#define GL_TEXTURE_COORD_ARRAY            0x8078
++#define GL_MULTISAMPLE                    0x809D
++#define GL_SAMPLE_ALPHA_TO_COVERAGE       0x809E
++#define GL_SAMPLE_ALPHA_TO_ONE            0x809F
++#define GL_SAMPLE_COVERAGE                0x80A0
++
++/* ErrorCode */
++#define GL_NO_ERROR                       0
++#define GL_INVALID_ENUM                   0x0500
++#define GL_INVALID_VALUE                  0x0501
++#define GL_INVALID_OPERATION              0x0502
++#define GL_STACK_OVERFLOW                 0x0503
++#define GL_STACK_UNDERFLOW                0x0504
++#define GL_OUT_OF_MEMORY                  0x0505
++
++/* FogMode */
++/*      GL_LINEAR */
++#define GL_EXP                            0x0800
++#define GL_EXP2                           0x0801
++
++/* FogParameter */
++#define GL_FOG_DENSITY                    0x0B62
++#define GL_FOG_START                      0x0B63
++#define GL_FOG_END                        0x0B64
++#define GL_FOG_MODE                       0x0B65
++#define GL_FOG_COLOR                      0x0B66
++
++/* FrontFaceDirection */
++#define GL_CW                             0x0900
++#define GL_CCW                            0x0901
++
++/* GetPName */
++#define GL_CURRENT_COLOR                  0x0B00
++#define GL_CURRENT_NORMAL                 0x0B02
++#define GL_CURRENT_TEXTURE_COORDS         0x0B03
++#define GL_POINT_SIZE                     0x0B11
++#define GL_POINT_SIZE_MIN                 0x8126
++#define GL_POINT_SIZE_MAX                 0x8127
++#define GL_POINT_FADE_THRESHOLD_SIZE      0x8128
++#define GL_POINT_DISTANCE_ATTENUATION     0x8129
++#define GL_SMOOTH_POINT_SIZE_RANGE        0x0B12
++#define GL_LINE_WIDTH                     0x0B21
++#define GL_SMOOTH_LINE_WIDTH_RANGE        0x0B22
++#define GL_ALIASED_POINT_SIZE_RANGE       0x846D
++#define GL_ALIASED_LINE_WIDTH_RANGE       0x846E
++#define GL_CULL_FACE_MODE                 0x0B45
++#define GL_FRONT_FACE                     0x0B46
++#define GL_SHADE_MODEL                    0x0B54
++#define GL_DEPTH_RANGE                    0x0B70
++#define GL_DEPTH_WRITEMASK                0x0B72
++#define GL_DEPTH_CLEAR_VALUE              0x0B73
++#define GL_DEPTH_FUNC                     0x0B74
++#define GL_STENCIL_CLEAR_VALUE            0x0B91
++#define GL_STENCIL_FUNC                   0x0B92
++#define GL_STENCIL_VALUE_MASK             0x0B93
++#define GL_STENCIL_FAIL                   0x0B94
++#define GL_STENCIL_PASS_DEPTH_FAIL        0x0B95
++#define GL_STENCIL_PASS_DEPTH_PASS        0x0B96
++#define GL_STENCIL_REF                    0x0B97
++#define GL_STENCIL_WRITEMASK              0x0B98
++#define GL_MATRIX_MODE                    0x0BA0
++#define GL_VIEWPORT                       0x0BA2
++#define GL_MODELVIEW_STACK_DEPTH          0x0BA3
++#define GL_PROJECTION_STACK_DEPTH         0x0BA4
++#define GL_TEXTURE_STACK_DEPTH            0x0BA5
++#define GL_MODELVIEW_MATRIX               0x0BA6
++#define GL_PROJECTION_MATRIX              0x0BA7
++#define GL_TEXTURE_MATRIX                 0x0BA8
++#define GL_ALPHA_TEST_FUNC                0x0BC1
++#define GL_ALPHA_TEST_REF                 0x0BC2
++#define GL_BLEND_DST                      0x0BE0
++#define GL_BLEND_SRC                      0x0BE1
++#define GL_LOGIC_OP_MODE                  0x0BF0
++#define GL_SCISSOR_BOX                    0x0C10
++#define GL_SCISSOR_TEST                   0x0C11
++#define GL_COLOR_CLEAR_VALUE              0x0C22
++#define GL_COLOR_WRITEMASK                0x0C23
++#define GL_UNPACK_ALIGNMENT               0x0CF5
++#define GL_PACK_ALIGNMENT                 0x0D05
++#define GL_MAX_LIGHTS                     0x0D31
++#define GL_MAX_CLIP_PLANES                0x0D32
++#define GL_MAX_TEXTURE_SIZE               0x0D33
++#define GL_MAX_MODELVIEW_STACK_DEPTH      0x0D36
++#define GL_MAX_PROJECTION_STACK_DEPTH     0x0D38
++#define GL_MAX_TEXTURE_STACK_DEPTH        0x0D39
++#define GL_MAX_VIEWPORT_DIMS              0x0D3A
++#define GL_MAX_TEXTURE_UNITS              0x84E2
++#define GL_SUBPIXEL_BITS                  0x0D50
++#define GL_RED_BITS                       0x0D52
++#define GL_GREEN_BITS                     0x0D53
++#define GL_BLUE_BITS                      0x0D54
++#define GL_ALPHA_BITS                     0x0D55
++#define GL_DEPTH_BITS                     0x0D56
++#define GL_STENCIL_BITS                   0x0D57
++#define GL_POLYGON_OFFSET_UNITS           0x2A00
++#define GL_POLYGON_OFFSET_FILL            0x8037
++#define GL_POLYGON_OFFSET_FACTOR          0x8038
++#define GL_TEXTURE_BINDING_2D             0x8069
++#define GL_VERTEX_ARRAY_SIZE              0x807A
++#define GL_VERTEX_ARRAY_TYPE              0x807B
++#define GL_VERTEX_ARRAY_STRIDE            0x807C
++#define GL_NORMAL_ARRAY_TYPE              0x807E
++#define GL_NORMAL_ARRAY_STRIDE            0x807F
++#define GL_COLOR_ARRAY_SIZE               0x8081
++#define GL_COLOR_ARRAY_TYPE               0x8082
++#define GL_COLOR_ARRAY_STRIDE             0x8083
++#define GL_TEXTURE_COORD_ARRAY_SIZE       0x8088
++#define GL_TEXTURE_COORD_ARRAY_TYPE       0x8089
++#define GL_TEXTURE_COORD_ARRAY_STRIDE     0x808A
++#define GL_VERTEX_ARRAY_POINTER           0x808E
++#define GL_NORMAL_ARRAY_POINTER           0x808F
++#define GL_COLOR_ARRAY_POINTER            0x8090
++#define GL_TEXTURE_COORD_ARRAY_POINTER    0x8092
++#define GL_SAMPLE_BUFFERS                 0x80A8
++#define GL_SAMPLES                        0x80A9
++#define GL_SAMPLE_COVERAGE_VALUE          0x80AA
++#define GL_SAMPLE_COVERAGE_INVERT         0x80AB
++
++/* GetTextureParameter */
++/*      GL_TEXTURE_MAG_FILTER */
++/*      GL_TEXTURE_MIN_FILTER */
++/*      GL_TEXTURE_WRAP_S */
++/*      GL_TEXTURE_WRAP_T */
++
++#define GL_NUM_COMPRESSED_TEXTURE_FORMATS 0x86A2
++#define GL_COMPRESSED_TEXTURE_FORMATS     0x86A3
++
++/* HintMode */
++#define GL_DONT_CARE                      0x1100
++#define GL_FASTEST                        0x1101
++#define GL_NICEST                         0x1102
++
++/* HintTarget */
++#define GL_PERSPECTIVE_CORRECTION_HINT    0x0C50
++#define GL_POINT_SMOOTH_HINT              0x0C51
++#define GL_LINE_SMOOTH_HINT               0x0C52
++#define GL_FOG_HINT                       0x0C54
++#define GL_GENERATE_MIPMAP_HINT           0x8192
++
++/* LightModelParameter */
++#define GL_LIGHT_MODEL_AMBIENT            0x0B53
++#define GL_LIGHT_MODEL_TWO_SIDE           0x0B52
++
++/* LightParameter */
++#define GL_AMBIENT                        0x1200
++#define GL_DIFFUSE                        0x1201
++#define GL_SPECULAR                       0x1202
++#define GL_POSITION                       0x1203
++#define GL_SPOT_DIRECTION                 0x1204
++#define GL_SPOT_EXPONENT                  0x1205
++#define GL_SPOT_CUTOFF                    0x1206
++#define GL_CONSTANT_ATTENUATION           0x1207
++#define GL_LINEAR_ATTENUATION             0x1208
++#define GL_QUADRATIC_ATTENUATION          0x1209
++
++/* DataType */
++#define GL_BYTE                           0x1400
++#define GL_UNSIGNED_BYTE                  0x1401
++#define GL_SHORT                          0x1402
++#define GL_UNSIGNED_SHORT                 0x1403
++#define GL_FLOAT                          0x1406
++#define GL_FIXED                          0x140C
++
++/* LogicOp */
++#define GL_CLEAR                          0x1500
++#define GL_AND                            0x1501
++#define GL_AND_REVERSE                    0x1502
++#define GL_COPY                           0x1503
++#define GL_AND_INVERTED                   0x1504
++#define GL_NOOP                           0x1505
++#define GL_XOR                            0x1506
++#define GL_OR                             0x1507
++#define GL_NOR                            0x1508
++#define GL_EQUIV                          0x1509
++#define GL_INVERT                         0x150A
++#define GL_OR_REVERSE                     0x150B
++#define GL_COPY_INVERTED                  0x150C
++#define GL_OR_INVERTED                    0x150D
++#define GL_NAND                           0x150E
++#define GL_SET                            0x150F
++
++/* MaterialFace */
++/*      GL_FRONT_AND_BACK */
++
++/* MaterialParameter */
++#define GL_EMISSION                       0x1600
++#define GL_SHININESS                      0x1601
++#define GL_AMBIENT_AND_DIFFUSE            0x1602
++/*      GL_AMBIENT */
++/*      GL_DIFFUSE */
++/*      GL_SPECULAR */
++
++/* MatrixMode */
++#define GL_MODELVIEW                      0x1700
++#define GL_PROJECTION                     0x1701
++#define GL_TEXTURE                        0x1702
++
++/* NormalPointerType */
++/*      GL_BYTE */
++/*      GL_SHORT */
++/*      GL_FLOAT */
++/*      GL_FIXED */
++
++/* PixelFormat */
++#define GL_ALPHA                          0x1906
++#define GL_RGB                            0x1907
++#define GL_RGBA                           0x1908
++#define GL_LUMINANCE                      0x1909
++#define GL_LUMINANCE_ALPHA                0x190A
++
++/* PixelStoreParameter */
++#define GL_UNPACK_ALIGNMENT               0x0CF5
++#define GL_PACK_ALIGNMENT                 0x0D05
++
++/* PixelType */
++/*      GL_UNSIGNED_BYTE */
++#define GL_UNSIGNED_SHORT_4_4_4_4         0x8033
++#define GL_UNSIGNED_SHORT_5_5_5_1         0x8034
++#define GL_UNSIGNED_SHORT_5_6_5           0x8363
++
++/* ShadingModel */
++#define GL_FLAT                           0x1D00
++#define GL_SMOOTH                         0x1D01
++
++/* StencilFunction */
++/*      GL_NEVER */
++/*      GL_LESS */
++/*      GL_EQUAL */
++/*      GL_LEQUAL */
++/*      GL_GREATER */
++/*      GL_NOTEQUAL */
++/*      GL_GEQUAL */
++/*      GL_ALWAYS */
++
++/* StencilOp */
++/*      GL_ZERO */
++#define GL_KEEP                           0x1E00
++#define GL_REPLACE                        0x1E01
++#define GL_INCR                           0x1E02
++#define GL_DECR                           0x1E03
++/*      GL_INVERT */
++
++/* StringName */
++#define GL_VENDOR                         0x1F00
++#define GL_RENDERER                       0x1F01
++#define GL_VERSION                        0x1F02
++#define GL_EXTENSIONS                     0x1F03
++
++/* TexCoordPointerType */
++/*      GL_SHORT */
++/*      GL_FLOAT */
++/*      GL_FIXED */
++/*      GL_BYTE */
++
++/* TextureEnvMode */
++#define GL_MODULATE                       0x2100
++#define GL_DECAL                          0x2101
++/*      GL_BLEND */
++#define GL_ADD                            0x0104
++/*      GL_REPLACE */
++
++/* TextureEnvParameter */
++#define GL_TEXTURE_ENV_MODE               0x2200
++#define GL_TEXTURE_ENV_COLOR              0x2201
++
++/* TextureEnvTarget */
++#define GL_TEXTURE_ENV                    0x2300
++
++/* TextureMagFilter */
++#define GL_NEAREST                        0x2600
++#define GL_LINEAR                         0x2601
++
++/* TextureMinFilter */
++/*      GL_NEAREST */
++/*      GL_LINEAR */
++#define GL_NEAREST_MIPMAP_NEAREST         0x2700
++#define GL_LINEAR_MIPMAP_NEAREST          0x2701
++#define GL_NEAREST_MIPMAP_LINEAR          0x2702
++#define GL_LINEAR_MIPMAP_LINEAR           0x2703
++
++/* TextureParameterName */
++#define GL_TEXTURE_MAG_FILTER             0x2800
++#define GL_TEXTURE_MIN_FILTER             0x2801
++#define GL_TEXTURE_WRAP_S                 0x2802
++#define GL_TEXTURE_WRAP_T                 0x2803
++#define GL_GENERATE_MIPMAP                0x8191
++
++/* TextureTarget */
++/*      GL_TEXTURE_2D */
++
++/* TextureUnit */
++#define GL_TEXTURE0                       0x84C0
++#define GL_TEXTURE1                       0x84C1
++#define GL_TEXTURE2                       0x84C2
++#define GL_TEXTURE3                       0x84C3
++#define GL_TEXTURE4                       0x84C4
++#define GL_TEXTURE5                       0x84C5
++#define GL_TEXTURE6                       0x84C6
++#define GL_TEXTURE7                       0x84C7
++#define GL_TEXTURE8                       0x84C8
++#define GL_TEXTURE9                       0x84C9
++#define GL_TEXTURE10                      0x84CA
++#define GL_TEXTURE11                      0x84CB
++#define GL_TEXTURE12                      0x84CC
++#define GL_TEXTURE13                      0x84CD
++#define GL_TEXTURE14                      0x84CE
++#define GL_TEXTURE15                      0x84CF
++#define GL_TEXTURE16                      0x84D0
++#define GL_TEXTURE17                      0x84D1
++#define GL_TEXTURE18                      0x84D2
++#define GL_TEXTURE19                      0x84D3
++#define GL_TEXTURE20                      0x84D4
++#define GL_TEXTURE21                      0x84D5
++#define GL_TEXTURE22                      0x84D6
++#define GL_TEXTURE23                      0x84D7
++#define GL_TEXTURE24                      0x84D8
++#define GL_TEXTURE25                      0x84D9
++#define GL_TEXTURE26                      0x84DA
++#define GL_TEXTURE27                      0x84DB
++#define GL_TEXTURE28                      0x84DC
++#define GL_TEXTURE29                      0x84DD
++#define GL_TEXTURE30                      0x84DE
++#define GL_TEXTURE31                      0x84DF
++#define GL_ACTIVE_TEXTURE                 0x84E0
++#define GL_CLIENT_ACTIVE_TEXTURE          0x84E1
++
++/* TextureWrapMode */
++#define GL_REPEAT                         0x2901
++#define GL_CLAMP_TO_EDGE                  0x812F
++
++/* VertexPointerType */
++/*      GL_SHORT */
++/*      GL_FLOAT */
++/*      GL_FIXED */
++/*      GL_BYTE */
++
++/* LightName */
++#define GL_LIGHT0                         0x4000
++#define GL_LIGHT1                         0x4001
++#define GL_LIGHT2                         0x4002
++#define GL_LIGHT3                         0x4003
++#define GL_LIGHT4                         0x4004
++#define GL_LIGHT5                         0x4005
++#define GL_LIGHT6                         0x4006
++#define GL_LIGHT7                         0x4007
++
++/* Buffer Objects */
++#define GL_ARRAY_BUFFER                   0x8892
++#define GL_ELEMENT_ARRAY_BUFFER           0x8893
++
++#define GL_ARRAY_BUFFER_BINDING               0x8894
++#define GL_ELEMENT_ARRAY_BUFFER_BINDING       0x8895
++#define GL_VERTEX_ARRAY_BUFFER_BINDING        0x8896
++#define GL_NORMAL_ARRAY_BUFFER_BINDING        0x8897
++#define GL_COLOR_ARRAY_BUFFER_BINDING         0x8898
++#define GL_TEXTURE_COORD_ARRAY_BUFFER_BINDING 0x889A
++
++#define GL_STATIC_DRAW                    0x88E4
++#define GL_DYNAMIC_DRAW                   0x88E8
++
++#define GL_BUFFER_SIZE                    0x8764
++#define GL_BUFFER_USAGE                   0x8765
++
++/* Texture combine + dot3 */
++#define GL_SUBTRACT                       0x84E7
++#define GL_COMBINE                        0x8570
++#define GL_COMBINE_RGB                    0x8571
++#define GL_COMBINE_ALPHA                  0x8572
++#define GL_RGB_SCALE                      0x8573
++#define GL_ADD_SIGNED                     0x8574
++#define GL_INTERPOLATE                    0x8575
++#define GL_CONSTANT                       0x8576
++#define GL_PRIMARY_COLOR                  0x8577
++#define GL_PREVIOUS                       0x8578
++#define GL_OPERAND0_RGB                   0x8590
++#define GL_OPERAND1_RGB                   0x8591
++#define GL_OPERAND2_RGB                   0x8592
++#define GL_OPERAND0_ALPHA                 0x8598
++#define GL_OPERAND1_ALPHA                 0x8599
++#define GL_OPERAND2_ALPHA                 0x859A
++
++#define GL_ALPHA_SCALE                    0x0D1C
++
++#define GL_SRC0_RGB                       0x8580
++#define GL_SRC1_RGB                       0x8581
++#define GL_SRC2_RGB                       0x8582
++#define GL_SRC0_ALPHA                     0x8588
++#define GL_SRC1_ALPHA                     0x8589
++#define GL_SRC2_ALPHA                     0x858A
++
++#define GL_DOT3_RGB                       0x86AE
++#define GL_DOT3_RGBA                      0x86AF
++
++/*------------------------------------------------------------------------*
++ * required OES extension tokens
++ *------------------------------------------------------------------------*/
++
++/* OES_read_format */
++#ifndef GL_OES_read_format
++#define GL_IMPLEMENTATION_COLOR_READ_TYPE_OES                   0x8B9A
++#define GL_IMPLEMENTATION_COLOR_READ_FORMAT_OES                 0x8B9B
++#endif
++
++/* GL_OES_compressed_paletted_texture */
++#ifndef GL_OES_compressed_paletted_texture
++#define GL_PALETTE4_RGB8_OES                                    0x8B90
++#define GL_PALETTE4_RGBA8_OES                                   0x8B91
++#define GL_PALETTE4_R5_G6_B5_OES                                0x8B92
++#define GL_PALETTE4_RGBA4_OES                                   0x8B93
++#define GL_PALETTE4_RGB5_A1_OES                                 0x8B94
++#define GL_PALETTE8_RGB8_OES                                    0x8B95
++#define GL_PALETTE8_RGBA8_OES                                   0x8B96
++#define GL_PALETTE8_R5_G6_B5_OES                                0x8B97
++#define GL_PALETTE8_RGBA4_OES                                   0x8B98
++#define GL_PALETTE8_RGB5_A1_OES                                 0x8B99
++#endif
++
++/* OES_point_size_array */
++#ifndef GL_OES_point_size_array
++#define GL_POINT_SIZE_ARRAY_OES                                 0x8B9C
++#define GL_POINT_SIZE_ARRAY_TYPE_OES                            0x898A
++#define GL_POINT_SIZE_ARRAY_STRIDE_OES                          0x898B
++#define GL_POINT_SIZE_ARRAY_POINTER_OES                         0x898C
++#define GL_POINT_SIZE_ARRAY_BUFFER_BINDING_OES                  0x8B9F
++#endif
++
++/* GL_OES_point_sprite */
++#ifndef GL_OES_point_sprite
++#define GL_POINT_SPRITE_OES                                     0x8861
++#define GL_COORD_REPLACE_OES                                    0x8862
++#endif
++
++
++/*************************************************************/
++
++/*  GL-ES 2.0 specific defines */
++#if GL_ES_VERSION_2_0
++/* BlendEquationSeparate */
++#define GL_FUNC_ADD                       0x8006
++#define GL_BLEND_EQUATION                 0x8009
++#define GL_BLEND_EQUATION_RGB             0x8009    /* same as BLEND_EQUATION */
++#define GL_BLEND_EQUATION_ALPHA           0x883D
++
++/* BlendSubtract */
++#define GL_FUNC_SUBTRACT                  0x800A
++#define GL_FUNC_REVERSE_SUBTRACT          0x800B
++
++/* Separate Blend Functions */
++#define GL_BLEND_DST_RGB                  0x80C8
++#define GL_BLEND_SRC_RGB                  0x80C9
++#define GL_BLEND_DST_ALPHA                0x80CA
++#define GL_BLEND_SRC_ALPHA                0x80CB
++#define GL_CONSTANT_COLOR                 0x8001
++#define GL_ONE_MINUS_CONSTANT_COLOR       0x8002
++#define GL_CONSTANT_ALPHA                 0x8003
++#define GL_ONE_MINUS_CONSTANT_ALPHA       0x8004
++#define GL_BLEND_COLOR                    0x8005
++
++/* Buffer Objects */
++#define GL_ARRAY_BUFFER                   0x8892
++#define GL_ELEMENT_ARRAY_BUFFER           0x8893
++#define GL_ARRAY_BUFFER_BINDING           0x8894
++#define GL_ELEMENT_ARRAY_BUFFER_BINDING   0x8895
++
++#define GL_STREAM_DRAW                    0x88E0
++#define GL_STATIC_DRAW                    0x88E4
++#define GL_DYNAMIC_DRAW                   0x88E8
++
++#define GL_BUFFER_SIZE                    0x8764
++#define GL_BUFFER_USAGE                   0x8765
++
++#define GL_CURRENT_VERTEX_ATTRIB          0x8626
++
++/* GetPName */
++#define GL_STENCIL_BACK_FUNC              0x8800
++#define GL_STENCIL_BACK_FAIL              0x8801
++#define GL_STENCIL_BACK_PASS_DEPTH_FAIL   0x8802
++#define GL_STENCIL_BACK_PASS_DEPTH_PASS   0x8803
++#define GL_STENCIL_BACK_REF               0x8CA3
++#define GL_STENCIL_BACK_VALUE_MASK        0x8CA4
++#define GL_STENCIL_BACK_WRITEMASK         0x8CA5
++
++/* Defines data types */
++#define GL_INT                            0x1404
++#define GL_UNSIGNED_INT                   0x1405
++
++/* Pixel Format */
++#define GL_DEPTH_COMPONENT                0x1902
++
++/* Shaders */
++#define GL_FRAGMENT_SHADER                  0x8B30
++#define GL_VERTEX_SHADER                    0x8B31
++#define GL_MAX_VERTEX_ATTRIBS               0x8869
++#define GL_MAX_VERTEX_UNIFORM_VECTORS       0x8DFB
++#define GL_MAX_VARYING_VECTORS              0x8DFC
++#define GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS 0x8B4D
++#define GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS   0x8B4C
++#define GL_MAX_TEXTURE_IMAGE_UNITS          0x8872
++#define GL_MAX_FRAGMENT_UNIFORM_VECTORS     0x8DFD
++#define GL_SHADER_TYPE                      0x8B4F
++#define GL_DELETE_STATUS                    0x8B80
++#define GL_LINK_STATUS                      0x8B82
++#define GL_VALIDATE_STATUS                  0x8B83
++#define GL_ATTACHED_SHADERS                 0x8B85
++#define GL_ACTIVE_UNIFORMS                  0x8B86
++#define GL_ACTIVE_UNIFORM_MAX_LENGTH        0x8B87
++#define GL_ACTIVE_ATTRIBUTES                0x8B89
++#define GL_ACTIVE_ATTRIBUTE_MAX_LENGTH      0x8B8A
++#define GL_SHADING_LANGUAGE_VERSION         0x8B8C
++#define GL_CURRENT_PROGRAM                  0x8B8D
++
++/* StencilFunction */
++#define GL_NEVER                          0x0200
++#define GL_LESS                           0x0201
++#define GL_EQUAL                          0x0202
++#define GL_LEQUAL                         0x0203
++#define GL_GREATER                        0x0204
++#define GL_NOTEQUAL                       0x0205
++#define GL_GEQUAL                         0x0206
++#define GL_ALWAYS                         0x0207
++
++/* StencilOp */
++#define GL_INVERT                         0x150A
++#define GL_INCR_WRAP                      0x8507
++#define GL_DECR_WRAP                      0x8508
++
++/* TextureTarget */
++#define GL_TEXTURE_CUBE_MAP               0x8513
++#define GL_TEXTURE_BINDING_CUBE_MAP       0x8514
++#define GL_TEXTURE_CUBE_MAP_POSITIVE_X    0x8515
++#define GL_TEXTURE_CUBE_MAP_NEGATIVE_X    0x8516
++#define GL_TEXTURE_CUBE_MAP_POSITIVE_Y    0x8517
++#define GL_TEXTURE_CUBE_MAP_NEGATIVE_Y    0x8518
++#define GL_TEXTURE_CUBE_MAP_POSITIVE_Z    0x8519
++#define GL_TEXTURE_CUBE_MAP_NEGATIVE_Z    0x851A
++#define GL_MAX_CUBE_MAP_TEXTURE_SIZE      0x851C
++
++/* TextureWrapMode */
++#define GL_MIRRORED_REPEAT                0x8370
++
++/* Uniform Types */
++#define GL_FLOAT_VEC2                     0x8B50
++#define GL_FLOAT_VEC3                     0x8B51
++#define GL_FLOAT_VEC4                     0x8B52
++#define GL_INT_VEC2                       0x8B53
++#define GL_INT_VEC3                       0x8B54
++#define GL_INT_VEC4                       0x8B55
++#define GL_BOOL                           0x8B56
++#define GL_BOOL_VEC2                      0x8B57
++#define GL_BOOL_VEC3                      0x8B58
++#define GL_BOOL_VEC4                      0x8B59
++#define GL_FLOAT_MAT2                     0x8B5A
++#define GL_FLOAT_MAT3                     0x8B5B
++#define GL_FLOAT_MAT4                     0x8B5C
++#define GL_SAMPLER_2D                     0x8B5E
++#define GL_SAMPLER_CUBE                   0x8B60
++
++/* Vertex Arrays */
++#define GL_VERTEX_ATTRIB_ARRAY_ENABLED        0x8622
++#define GL_VERTEX_ATTRIB_ARRAY_SIZE           0x8623
++#define GL_VERTEX_ATTRIB_ARRAY_STRIDE         0x8624
++#define GL_VERTEX_ATTRIB_ARRAY_TYPE           0x8625
++#define GL_VERTEX_ATTRIB_ARRAY_NORMALIZED     0x886A
++#define GL_VERTEX_ATTRIB_ARRAY_POINTER        0x8645
++#define GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING 0x889F
++
++/* Read Format */
++#define GL_IMPLEMENTATION_COLOR_READ_TYPE   0x8B9A
++#define GL_IMPLEMENTATION_COLOR_READ_FORMAT 0x8B9B
++
++/* Shader Source */
++#define GL_COMPILE_STATUS                 0x8B81
++#define GL_INFO_LOG_LENGTH                0x8B84
++#define GL_SHADER_SOURCE_LENGTH           0x8B88
++#define GL_SHADER_COMPILER                0x8DFA
++
++/* Shader Binary */
++#define GL_SHADER_BINARY_FORMATS          0x8DF8
++#define GL_NUM_SHADER_BINARY_FORMATS      0x8DF9
++
++/* Shader Precision-Specified Types */
++#define GL_LOW_FLOAT                      0x8DF0
++#define GL_MEDIUM_FLOAT                   0x8DF1
++#define GL_HIGH_FLOAT                     0x8DF2
++#define GL_LOW_INT                        0x8DF3
++#define GL_MEDIUM_INT                     0x8DF4
++#define GL_HIGH_INT                       0x8DF5
++
++/* Framebuffer Object. */
++#define GL_FRAMEBUFFER                    0x8D40
++#define GL_RENDERBUFFER                   0x8D41
++
++#define GL_RGBA4                          0x8056
++#define GL_RGB5_A1                        0x8057
++#define GL_RGB565                         0x8D62
++#define GL_DEPTH_COMPONENT16              0x81A5
++#define GL_STENCIL_INDEX                  0x1901
++#define GL_STENCIL_INDEX8                 0x8D48
++
++#define GL_RENDERBUFFER_WIDTH             0x8D42
++#define GL_RENDERBUFFER_HEIGHT            0x8D43
++#define GL_RENDERBUFFER_INTERNAL_FORMAT   0x8D44
++#define GL_RENDERBUFFER_RED_SIZE          0x8D50
++#define GL_RENDERBUFFER_GREEN_SIZE        0x8D51
++#define GL_RENDERBUFFER_BLUE_SIZE         0x8D52
++#define GL_RENDERBUFFER_ALPHA_SIZE        0x8D53
++#define GL_RENDERBUFFER_DEPTH_SIZE        0x8D54
++#define GL_RENDERBUFFER_STENCIL_SIZE      0x8D55
++
++#define GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE           0x8CD0
++#define GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME           0x8CD1
++#define GL_FRAMEBUFFER_ATTACHMENT_TEXTURE_LEVEL         0x8CD2
++#define GL_FRAMEBUFFER_ATTACHMENT_TEXTURE_CUBE_MAP_FACE 0x8CD3
++
++#define GL_COLOR_ATTACHMENT0              0x8CE0
++#define GL_DEPTH_ATTACHMENT               0x8D00
++#define GL_STENCIL_ATTACHMENT             0x8D20
++
++#define GL_NONE                           0
++
++#define GL_FRAMEBUFFER_COMPLETE                      0x8CD5
++#define GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT         0x8CD6
++#define GL_FRAMEBUFFER_INCOMPLETE_MISSING_ATTACHMENT 0x8CD7
++#define GL_FRAMEBUFFER_INCOMPLETE_DIMENSIONS         0x8CD9
++#define GL_FRAMEBUFFER_UNSUPPORTED                   0x8CDD
++
++#define GL_FRAMEBUFFER_BINDING            0x8CA6
++#define GL_RENDERBUFFER_BINDING           0x8CA7
++#define GL_MAX_RENDERBUFFER_SIZE          0x84E8
++
++#define GL_INVALID_FRAMEBUFFER_OPERATION  0x0506
++
++#endif
++
++
++
++/*************************************************************/
++
++/* Available only in Common profile */
++GL_API void GL_APIENTRY glAlphaFunc (GLenum func, GLclampf ref);
++GL_API void GL_APIENTRY glClearColor (GLclampf red, GLclampf green, GLclampf blue, GLclampf alpha);
++GL_API void GL_APIENTRY glClearDepthf (GLclampf depth);
++GL_API void GL_APIENTRY glClipPlanef (GLenum plane, const GLfloat *equation);
++GL_API void GL_APIENTRY glColor4f (GLfloat red, GLfloat green, GLfloat blue, GLfloat alpha);
++GL_API void GL_APIENTRY glDepthRangef (GLclampf zNear, GLclampf zFar);
++GL_API void GL_APIENTRY glFogf (GLenum pname, GLfloat param);
++GL_API void GL_APIENTRY glFogfv (GLenum pname, const GLfloat *params);
++GL_API void GL_APIENTRY glFrustumf (GLfloat left, GLfloat right, GLfloat bottom, GLfloat top, GLfloat zNear, GLfloat zFar);
++GL_API void GL_APIENTRY glGetClipPlanef (GLenum pname, GLfloat eqn[4]);
++GL_API void GL_APIENTRY glGetFloatv (GLenum pname, GLfloat *params);
++GL_API void GL_APIENTRY glGetLightfv (GLenum light, GLenum pname, GLfloat *params);
++GL_API void GL_APIENTRY glGetMaterialfv (GLenum face, GLenum pname, GLfloat *params);
++GL_API void GL_APIENTRY glGetTexEnvfv (GLenum env, GLenum pname, GLfloat *params);
++GL_API void GL_APIENTRY glGetTexParameterfv (GLenum target, GLenum pname, GLfloat *params);
++GL_API void GL_APIENTRY glLightModelf (GLenum pname, GLfloat param);
++GL_API void GL_APIENTRY glLightModelfv (GLenum pname, const GLfloat *params);
++GL_API void GL_APIENTRY glLightf (GLenum light, GLenum pname, GLfloat param);
++GL_API void GL_APIENTRY glLightfv (GLenum light, GLenum pname, const GLfloat *params);
++GL_API void GL_APIENTRY glLineWidth (GLfloat width);
++GL_API void GL_APIENTRY glLoadMatrixf (const GLfloat *m);
++GL_API void GL_APIENTRY glMaterialf (GLenum face, GLenum pname, GLfloat param);
++GL_API void GL_APIENTRY glMaterialfv (GLenum face, GLenum pname, const GLfloat *params);
++GL_API void GL_APIENTRY glMultMatrixf (const GLfloat *m);
++GL_API void GL_APIENTRY glMultiTexCoord4f (GLenum target, GLfloat s, GLfloat t, GLfloat r, GLfloat q);
++GL_API void GL_APIENTRY glNormal3f (GLfloat nx, GLfloat ny, GLfloat nz);
++GL_API void GL_APIENTRY glOrthof (GLfloat left, GLfloat right, GLfloat bottom, GLfloat top, GLfloat zNear, GLfloat zFar);
++GL_API void GL_APIENTRY glPointParameterf (GLenum pname, GLfloat param);
++GL_API void GL_APIENTRY glPointParameterfv (GLenum pname, const GLfloat *params);
++GL_API void GL_APIENTRY glPointSize (GLfloat size);
++GL_API void GL_APIENTRY glPolygonOffset (GLfloat factor, GLfloat units);
++GL_API void GL_APIENTRY glRotatef (GLfloat angle, GLfloat x, GLfloat y, GLfloat z);
++GL_API void GL_APIENTRY glScalef (GLfloat x, GLfloat y, GLfloat z);
++GL_API void GL_APIENTRY glTexEnvf (GLenum target, GLenum pname, GLfloat param);
++GL_API void GL_APIENTRY glTexEnvfv (GLenum target, GLenum pname, const GLfloat *params);
++GL_API void GL_APIENTRY glTexParameterf (GLenum target, GLenum pname, GLfloat param);
++GL_API void GL_APIENTRY glTexParameterfv (GLenum target, GLenum pname, const GLfloat *params);
++GL_API void GL_APIENTRY glTranslatef (GLfloat x, GLfloat y, GLfloat z);
++
++/* Available in both Common and Common-Lite profiles */
++GL_API void GL_APIENTRY glActiveTexture (GLenum texture);
++GL_API void GL_APIENTRY glAlphaFuncx (GLenum func, GLclampx ref);
++GL_API void GL_APIENTRY glBindBuffer (GLenum target, GLuint buffer);
++GL_API void GL_APIENTRY glBindTexture (GLenum target, GLuint texture);
++GL_API void GL_APIENTRY glBlendFunc (GLenum sfactor, GLenum dfactor);
++GL_API void GL_APIENTRY glBufferData (GLenum target, GLsizeiptr size, const GLvoid *data, GLenum usage);
++GL_API void GL_APIENTRY glBufferSubData (GLenum target, GLintptr offset, GLsizeiptr size, const GLvoid *data);
++GL_API void GL_APIENTRY glClear (GLbitfield mask);
++GL_API void GL_APIENTRY glClearColorx (GLclampx red, GLclampx green, GLclampx blue, GLclampx alpha);
++GL_API void GL_APIENTRY glClearDepthx (GLclampx depth);
++GL_API void GL_APIENTRY glClearStencil (GLint s);
++GL_API void GL_APIENTRY glClientActiveTexture (GLenum texture);
++GL_API void GL_APIENTRY glClipPlanex (GLenum plane, const GLfixed *equation);
++GL_API void GL_APIENTRY glColor4ub (GLubyte red, GLubyte green, GLubyte blue, GLubyte alpha);
++GL_API void GL_APIENTRY glColor4x (GLfixed red, GLfixed green, GLfixed blue, GLfixed alpha);
++GL_API void GL_APIENTRY glColorMask (GLboolean red, GLboolean green, GLboolean blue, GLboolean alpha);
++GL_API void GL_APIENTRY glColorPointer (GLint size, GLenum type, GLsizei stride, const GLvoid *pointer);
++GL_API void GL_APIENTRY glCompressedTexImage2D (GLenum target, GLint level, GLenum internalformat, GLsizei width, GLsizei height, GLint border, GLsizei imageSize, const GLvoid *data);
++GL_API void GL_APIENTRY glCompressedTexSubImage2D (GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLsizei imageSize, const GLvoid *data);
++GL_API void GL_APIENTRY glCopyTexImage2D (GLenum target, GLint level, GLenum internalformat, GLint x, GLint y, GLsizei width, GLsizei height, GLint border);
++GL_API void GL_APIENTRY glCopyTexSubImage2D (GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint x, GLint y, GLsizei width, GLsizei height);
++GL_API void GL_APIENTRY glCullFace (GLenum mode);
++GL_API void GL_APIENTRY glDeleteBuffers (GLsizei n, const GLuint *buffers);
++GL_API void GL_APIENTRY glDeleteTextures (GLsizei n, const GLuint *textures);
++GL_API void GL_APIENTRY glDepthFunc (GLenum func);
++GL_API void GL_APIENTRY glDepthMask (GLboolean flag);
++GL_API void GL_APIENTRY glDepthRangex (GLclampx zNear, GLclampx zFar);
++GL_API void GL_APIENTRY glDisable (GLenum cap);
++GL_API void GL_APIENTRY glDisableClientState (GLenum array);
++GL_API void GL_APIENTRY glDrawArrays (GLenum mode, GLint first, GLsizei count);
++GL_API void GL_APIENTRY glDrawElements (GLenum mode, GLsizei count, GLenum type, const GLvoid *indices);
++GL_API void GL_APIENTRY glEnable (GLenum cap);
++GL_API void GL_APIENTRY glEnableClientState (GLenum array);
++GL_API void GL_APIENTRY glFinish (void);
++GL_API void GL_APIENTRY glFlush (void);
++GL_API void GL_APIENTRY glFogx (GLenum pname, GLfixed param);
++GL_API void GL_APIENTRY glFogxv (GLenum pname, const GLfixed *params);
++GL_API void GL_APIENTRY glFrontFace (GLenum mode);
++GL_API void GL_APIENTRY glFrustumx (GLfixed left, GLfixed right, GLfixed bottom, GLfixed top, GLfixed zNear, GLfixed zFar);
++GL_API void GL_APIENTRY glGetBooleanv (GLenum pname, GLboolean *params);
++GL_API void GL_APIENTRY glGetBufferParameteriv (GLenum target, GLenum pname, GLint *params);
++GL_API void GL_APIENTRY glGetClipPlanex (GLenum pname, GLfixed eqn[4]);
++GL_API void GL_APIENTRY glGenBuffers (GLsizei n, GLuint *buffers);
++GL_API void GL_APIENTRY glGenTextures (GLsizei n, GLuint *textures);
++GL_API GLenum GL_APIENTRY glGetError (void);
++GL_API void GL_APIENTRY glGetFixedv (GLenum pname, GLfixed *params);
++GL_API void GL_APIENTRY glGetIntegerv (GLenum pname, GLint *params);
++GL_API void GL_APIENTRY glGetLightxv (GLenum light, GLenum pname, GLfixed *params);
++GL_API void GL_APIENTRY glGetMaterialxv (GLenum face, GLenum pname, GLfixed *params);
++GL_API void GL_APIENTRY glGetPointerv (GLenum pname, void **params);
++GL_API const GLubyte * GL_APIENTRY glGetString (GLenum name);
++GL_API void GL_APIENTRY glGetTexEnviv (GLenum env, GLenum pname, GLint *params);
++GL_API void GL_APIENTRY glGetTexEnvxv (GLenum env, GLenum pname, GLfixed *params);
++GL_API void GL_APIENTRY glGetTexParameteriv (GLenum target, GLenum pname, GLint *params);
++GL_API void GL_APIENTRY glGetTexParameterxv (GLenum target, GLenum pname, GLfixed *params);
++GL_API void GL_APIENTRY glHint (GLenum target, GLenum mode);
++GL_API GLboolean GL_APIENTRY glIsBuffer (GLuint buffer);
++GL_API GLboolean GL_APIENTRY glIsEnabled (GLenum cap);
++GL_API GLboolean GL_APIENTRY glIsTexture (GLuint texture);
++GL_API void GL_APIENTRY glLightModelx (GLenum pname, GLfixed param);
++GL_API void GL_APIENTRY glLightModelxv (GLenum pname, const GLfixed *params);
++GL_API void GL_APIENTRY glLightx (GLenum light, GLenum pname, GLfixed param);
++GL_API void GL_APIENTRY glLightxv (GLenum light, GLenum pname, const GLfixed *params);
++GL_API void GL_APIENTRY glLineWidthx (GLfixed width);
++GL_API void GL_APIENTRY glLoadIdentity (void);
++GL_API void GL_APIENTRY glLoadMatrixx (const GLfixed *m);
++GL_API void GL_APIENTRY glLogicOp (GLenum opcode);
++GL_API void GL_APIENTRY glMaterialx (GLenum face, GLenum pname, GLfixed param);
++GL_API void GL_APIENTRY glMaterialxv (GLenum face, GLenum pname, const GLfixed *params);
++GL_API void GL_APIENTRY glMatrixMode (GLenum mode);
++GL_API void GL_APIENTRY glMultMatrixx (const GLfixed *m);
++GL_API void GL_APIENTRY glMultiTexCoord4x (GLenum target, GLfixed s, GLfixed t, GLfixed r, GLfixed q);
++GL_API void GL_APIENTRY glNormal3x (GLfixed nx, GLfixed ny, GLfixed nz);
++GL_API void GL_APIENTRY glNormalPointer (GLenum type, GLsizei stride, const GLvoid *pointer);
++GL_API void GL_APIENTRY glOrthox (GLfixed left, GLfixed right, GLfixed bottom, GLfixed top, GLfixed zNear, GLfixed zFar);
++GL_API void GL_APIENTRY glPixelStorei (GLenum pname, GLint param);
++GL_API void GL_APIENTRY glPointParameterx (GLenum pname, GLfixed param);
++GL_API void GL_APIENTRY glPointParameterxv (GLenum pname, const GLfixed *params);
++GL_API void GL_APIENTRY glPointSizex (GLfixed size);
++GL_API void GL_APIENTRY glPolygonOffsetx (GLfixed factor, GLfixed units);
++GL_API void GL_APIENTRY glPopMatrix (void);
++GL_API void GL_APIENTRY glPushMatrix (void);
++GL_API void GL_APIENTRY glReadPixels (GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, GLvoid *pixels);
++GL_API void GL_APIENTRY glRotatex (GLfixed angle, GLfixed x, GLfixed y, GLfixed z);
++GL_API void GL_APIENTRY glSampleCoverage (GLclampf value, GLboolean invert);
++GL_API void GL_APIENTRY glSampleCoveragex (GLclampx value, GLboolean invert);
++GL_API void GL_APIENTRY glScalex (GLfixed x, GLfixed y, GLfixed z);
++GL_API void GL_APIENTRY glScissor (GLint x, GLint y, GLsizei width, GLsizei height);
++GL_API void GL_APIENTRY glShadeModel (GLenum mode);
++GL_API void GL_APIENTRY glStencilFunc (GLenum func, GLint ref, GLuint mask);
++GL_API void GL_APIENTRY glStencilMask (GLuint mask);
++GL_API void GL_APIENTRY glStencilOp (GLenum fail, GLenum zfail, GLenum zpass);
++GL_API void GL_APIENTRY glTexCoordPointer (GLint size, GLenum type, GLsizei stride, const GLvoid *pointer);
++GL_API void GL_APIENTRY glTexEnvi (GLenum target, GLenum pname, GLint param);
++GL_API void GL_APIENTRY glTexEnvx (GLenum target, GLenum pname, GLfixed param);
++GL_API void GL_APIENTRY glTexEnviv (GLenum target, GLenum pname, const GLint *params);
++GL_API void GL_APIENTRY glTexEnvxv (GLenum target, GLenum pname, const GLfixed *params);
++GL_API void GL_APIENTRY glTexImage2D (GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type, const GLvoid *pixels);
++GL_API void GL_APIENTRY glTexParameteri (GLenum target, GLenum pname, GLint param);
++GL_API void GL_APIENTRY glTexParameterx (GLenum target, GLenum pname, GLfixed param);
++GL_API void GL_APIENTRY glTexParameteriv (GLenum target, GLenum pname, const GLint *params);
++GL_API void GL_APIENTRY glTexParameterxv (GLenum target, GLenum pname, const GLfixed *params);
++GL_API void GL_APIENTRY glTexSubImage2D (GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLenum type, const GLvoid *pixels);
++GL_API void GL_APIENTRY glTranslatex (GLfixed x, GLfixed y, GLfixed z);
++GL_API void GL_APIENTRY glVertexPointer (GLint size, GLenum type, GLsizei stride, const GLvoid *pointer);
++GL_API void GL_APIENTRY glViewport (GLint x, GLint y, GLsizei width, GLsizei height);
++
++/*------------------------------------------------------------------------*
++ * Required OES extension functions
++ *------------------------------------------------------------------------*/
++
++/* GL_OES_read_format */
++#ifndef GL_OES_read_format
++#define GL_OES_read_format 1
++#endif
++
++/* GL_OES_compressed_paletted_texture */
++#ifndef GL_OES_compressed_paletted_texture
++#define GL_OES_compressed_paletted_texture 1
++#endif
++
++/* GL_OES_point_size_array */
++#ifndef GL_OES_point_size_array
++#define GL_OES_point_size_array 1
++GL_API void GL_APIENTRY glPointSizePointerOES (GLenum type, GLsizei stride, const GLvoid *pointer);
++#endif
++
++/* GL_OES_point_sprite */
++#ifndef GL_OES_point_sprite
++#define GL_OES_point_sprite 1
++#endif
++
++#include "SDL_opengles_ext.h"
++
++/*************************************************************/
++
++/* Available only in GL-ES 2.0 only*/
++#if GL_ES_VERSION_2_0
++GL_API void         GL_APIENTRY glAttachShader (GLuint program, GLuint shader);
++GL_API void         GL_APIENTRY glBindAttribLocation (GLuint program, GLuint index, const char* name);
++GL_API void         GL_APIENTRY glBindBuffer (GLenum target, GLuint buffer);
++GL_API void         GL_APIENTRY glBindFramebuffer (GLenum target, GLuint framebuffer);
++GL_API void         GL_APIENTRY glBindRenderbuffer (GLenum target, GLuint renderbuffer);
++GL_API void         GL_APIENTRY glBindTexture (GLenum target, GLuint texture);
++GL_API void         GL_APIENTRY glBlendColor (GLclampf red, GLclampf green, GLclampf blue, GLclampf alpha);
++GL_API void         GL_APIENTRY glBlendEquation ( GLenum mode );
++GL_API void         GL_APIENTRY glBlendEquationSeparate (GLenum modeRGB, GLenum modeAlpha);
++GL_API void         GL_APIENTRY glBlendFunc (GLenum sfactor, GLenum dfactor);
++GL_API void         GL_APIENTRY glBlendFuncSeparate (GLenum srcRGB, GLenum dstRGB, GLenum srcAlpha, GLenum dstAlpha);
++GL_API void         GL_APIENTRY glBufferData (GLenum target, GLsizeiptr size, const void* data, GLenum usage);
++GL_API void         GL_APIENTRY glBufferSubData (GLenum target, GLintptr offset, GLsizeiptr size, const void* data);
++GL_API GLenum       GL_APIENTRY glCheckFramebufferStatus (GLenum target);
++GL_API void         GL_APIENTRY glClear (GLbitfield mask);
++GL_API void         GL_APIENTRY glClearColor (GLclampf red, GLclampf green, GLclampf blue, GLclampf alpha);
++GL_API void         GL_APIENTRY glClearDepthf (GLclampf depth);
++GL_API void         GL_APIENTRY glClearStencil (GLint s);
++GL_API void         GL_APIENTRY glColorMask (GLboolean red, GLboolean green, GLboolean blue, GLboolean alpha);
++GL_API void         GL_APIENTRY glCompileShader (GLuint shader);
++GL_API void         GL_APIENTRY glCompressedTexImage2D (GLenum target, GLint level, GLenum internalformat, GLsizei width, GLsizei height, GLint border, GLsizei imageSize, const void* data);
++GL_API void         GL_APIENTRY glCompressedTexSubImage2D (GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLsizei imageSize, const void* data);
++GL_API void         GL_APIENTRY glCopyTexImage2D (GLenum target, GLint level, GLenum internalformat, GLint x, GLint y, GLsizei width, GLsizei height, GLint border);
++GL_API void         GL_APIENTRY glCopyTexSubImage2D (GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint x, GLint y, GLsizei width, GLsizei height);
++GL_API GLuint       GL_APIENTRY glCreateProgram (void);
++GL_API GLuint       GL_APIENTRY glCreateShader (GLenum type);
++GL_API void         GL_APIENTRY glCullFace (GLenum mode);
++GL_API void         GL_APIENTRY glDeleteBuffers (GLsizei n, const GLuint* buffers);
++GL_API void         GL_APIENTRY glDeleteFramebuffers (GLsizei n, const GLuint* framebuffers);
++GL_API void         GL_APIENTRY glDeleteProgram (GLuint program);
++GL_API void         GL_APIENTRY glDeleteRenderbuffers (GLsizei n, const GLuint* renderbuffers);
++GL_API void         GL_APIENTRY glDeleteShader (GLuint shader);
++GL_API void         GL_APIENTRY glDeleteTextures (GLsizei n, const GLuint* textures);
++GL_API void         GL_APIENTRY glDepthFunc (GLenum func);
++GL_API void         GL_APIENTRY glDepthMask (GLboolean flag);
++GL_API void         GL_APIENTRY glDepthRangef (GLclampf zNear, GLclampf zFar);
++GL_API void         GL_APIENTRY glDetachShader (GLuint program, GLuint shader);
++GL_API void         GL_APIENTRY glDisable (GLenum cap);
++GL_API void         GL_APIENTRY glDisableVertexAttribArray (GLuint index);
++GL_API void         GL_APIENTRY glDrawArrays (GLenum mode, GLint first, GLsizei count);
++GL_API void         GL_APIENTRY glDrawElements (GLenum mode, GLsizei count, GLenum type, const void* indices);
++GL_API void         GL_APIENTRY glEnable (GLenum cap);
++GL_API void         GL_APIENTRY glEnableVertexAttribArray (GLuint index);
++GL_API void         GL_APIENTRY glFinish (void);
++GL_API void         GL_APIENTRY glFlush (void);
++GL_API void         GL_APIENTRY glFramebufferRenderbuffer (GLenum target, GLenum attachment, GLenum renderbuffertarget, GLuint renderbuffer);
++GL_API void         GL_APIENTRY glFramebufferTexture2D (GLenum target, GLenum attachment, GLenum textarget, GLuint texture, GLint level);
++GL_API void         GL_APIENTRY glFrontFace (GLenum mode);
++GL_API void         GL_APIENTRY glGenBuffers (GLsizei n, GLuint* buffers);
++GL_API void         GL_APIENTRY glGenerateMipmap (GLenum target);
++GL_API void         GL_APIENTRY glGenFramebuffers (GLsizei n, GLuint* framebuffers);
++GL_API void         GL_APIENTRY glGenRenderbuffers (GLsizei n, GLuint* renderbuffers);
++GL_API void         GL_APIENTRY glGenTextures (GLsizei n, GLuint* textures);
++GL_API void         GL_APIENTRY glGetActiveAttrib (GLuint program, GLuint index, GLsizei bufsize, GLsizei* length, GLint* size, GLenum* type, char* name);
++GL_API void         GL_APIENTRY glGetActiveUniform (GLuint program, GLuint index, GLsizei bufsize, GLsizei* length, GLint* size, GLenum* type, char* name);
++GL_API void         GL_APIENTRY glGetAttachedShaders (GLuint program, GLsizei maxcount, GLsizei* count, GLuint* shaders);
++GL_API int          GL_APIENTRY glGetAttribLocation (GLuint program, const char* name);
++GL_API void         GL_APIENTRY glGetBooleanv (GLenum pname, GLboolean* params);
++GL_API void         GL_APIENTRY glGetBufferParameteriv (GLenum target, GLenum pname, GLint* params);
++GL_API GLenum       GL_APIENTRY glGetError (void);
++GL_API void         GL_APIENTRY glGetFloatv (GLenum pname, GLfloat* params);
++GL_API void         GL_APIENTRY glGetFramebufferAttachmentParameteriv (GLenum target, GLenum attachment, GLenum pname, GLint* params);
++GL_API void         GL_APIENTRY glGetIntegerv (GLenum pname, GLint* params);
++GL_API void         GL_APIENTRY glGetProgramiv (GLuint program, GLenum pname, GLint* params);
++GL_API void         GL_APIENTRY glGetProgramInfoLog (GLuint program, GLsizei bufsize, GLsizei* length, char* infolog);
++GL_API void         GL_APIENTRY glGetRenderbufferParameteriv (GLenum target, GLenum pname, GLint* params);
++GL_API void         GL_APIENTRY glGetShaderiv (GLuint shader, GLenum pname, GLint* params);
++GL_API void         GL_APIENTRY glGetShaderInfoLog (GLuint shader, GLsizei bufsize, GLsizei* length, char* infolog);
++GL_API void         GL_APIENTRY glGetShaderPrecisionFormat (GLenum shadertype, GLenum precisiontype, GLint* range, GLint* precision);
++GL_API void         GL_APIENTRY glGetShaderSource (GLuint shader, GLsizei bufsize, GLsizei* length, char* source);
++GL_API const GLubyte* GL_APIENTRY glGetString (GLenum name);
++GL_API void         GL_APIENTRY glGetTexParameterfv (GLenum target, GLenum pname, GLfloat* params);
++GL_API void         GL_APIENTRY glGetTexParameteriv (GLenum target, GLenum pname, GLint* params);
++GL_API void         GL_APIENTRY glGetUniformfv (GLuint program, GLint location, GLfloat* params);
++GL_API void         GL_APIENTRY glGetUniformiv (GLuint program, GLint location, GLint* params);
++GL_API int          GL_APIENTRY glGetUniformLocation (GLuint program, const char* name);
++GL_API void         GL_APIENTRY glGetVertexAttribfv (GLuint index, GLenum pname, GLfloat* params);
++GL_API void         GL_APIENTRY glGetVertexAttribiv (GLuint index, GLenum pname, GLint* params);
++GL_API void         GL_APIENTRY glGetVertexAttribPointerv (GLuint index, GLenum pname, void** pointer);
++GL_API void         GL_APIENTRY glHint (GLenum target, GLenum mode);
++GL_API GLboolean    GL_APIENTRY glIsBuffer (GLuint buffer);
++GL_API GLboolean    GL_APIENTRY glIsEnabled (GLenum cap);
++GL_API GLboolean    GL_APIENTRY glIsFramebuffer (GLuint framebuffer);
++GL_API GLboolean    GL_APIENTRY glIsProgram (GLuint program);
++GL_API GLboolean    GL_APIENTRY glIsRenderbuffer (GLuint renderbuffer);
++GL_API GLboolean    GL_APIENTRY glIsShader (GLuint shader);
++GL_API GLboolean    GL_APIENTRY glIsTexture (GLuint texture);
++GL_API void         GL_APIENTRY glLineWidth (GLfloat width);
++GL_API void         GL_APIENTRY glLinkProgram (GLuint program);
++GL_API void         GL_APIENTRY glPixelStorei (GLenum pname, GLint param);
++GL_API void         GL_APIENTRY glPolygonOffset (GLfloat factor, GLfloat units);
++GL_API void         GL_APIENTRY glReadPixels (GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, void* pixels);
++GL_API void         GL_APIENTRY glReleaseShaderCompiler (void);
++GL_API void         GL_APIENTRY glRenderbufferStorage (GLenum target, GLenum internalformat, GLsizei width, GLsizei height);
++GL_API void         GL_APIENTRY glSampleCoverage (GLclampf value, GLboolean invert);
++GL_API void         GL_APIENTRY glScissor (GLint x, GLint y, GLsizei width, GLsizei height);
++GL_API void         GL_APIENTRY glShaderBinary (GLsizei n, const GLuint* shaders, GLenum binaryformat, const void* binary, GLsizei length);
++GL_API void         GL_APIENTRY glShaderSource (GLuint shader, GLsizei count, const char** string, const GLint* length);
++GL_API void         GL_APIENTRY glStencilFunc (GLenum func, GLint ref, GLuint mask);
++GL_API void         GL_APIENTRY glStencilFuncSeparate (GLenum face, GLenum func, GLint ref, GLuint mask);
++GL_API void         GL_APIENTRY glStencilMask (GLuint mask);
++GL_API void         GL_APIENTRY glStencilMaskSeparate (GLenum face, GLuint mask);
++GL_API void         GL_APIENTRY glStencilOp (GLenum fail, GLenum zfail, GLenum zpass);
++GL_API void         GL_APIENTRY glStencilOpSeparate (GLenum face, GLenum fail, GLenum zfail, GLenum zpass);
++GL_API void         GL_APIENTRY glTexImage2D (GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type, const GLvoid *pixels);
++GL_API void         GL_APIENTRY glTexParameterf (GLenum target, GLenum pname, GLfloat param);
++GL_API void         GL_APIENTRY glTexParameterfv (GLenum target, GLenum pname, const GLfloat* params);
++GL_API void         GL_APIENTRY glTexParameteri (GLenum target, GLenum pname, GLint param);
++GL_API void         GL_APIENTRY glTexParameteriv (GLenum target, GLenum pname, const GLint* params);
++GL_API void         GL_APIENTRY glTexSubImage2D (GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLenum type, const void* pixels);
++GL_API void         GL_APIENTRY glUniform1f (GLint location, GLfloat x);
++GL_API void         GL_APIENTRY glUniform1fv (GLint location, GLsizei count, const GLfloat* v);
++GL_API void         GL_APIENTRY glUniform1i (GLint location, GLint x);
++GL_API void         GL_APIENTRY glUniform1iv (GLint location, GLsizei count, const GLint* v);
++GL_API void         GL_APIENTRY glUniform2f (GLint location, GLfloat x, GLfloat y);
++GL_API void         GL_APIENTRY glUniform2fv (GLint location, GLsizei count, const GLfloat* v);
++GL_API void         GL_APIENTRY glUniform2i (GLint location, GLint x, GLint y);
++GL_API void         GL_APIENTRY glUniform2iv (GLint location, GLsizei count, const GLint* v);
++GL_API void         GL_APIENTRY glUniform3f (GLint location, GLfloat x, GLfloat y, GLfloat z);
++GL_API void         GL_APIENTRY glUniform3fv (GLint location, GLsizei count, const GLfloat* v);
++GL_API void         GL_APIENTRY glUniform3i (GLint location, GLint x, GLint y, GLint z);
++GL_API void         GL_APIENTRY glUniform3iv (GLint location, GLsizei count, const GLint* v);
++GL_API void         GL_APIENTRY glUniform4f (GLint location, GLfloat x, GLfloat y, GLfloat z, GLfloat w);
++GL_API void         GL_APIENTRY glUniform4fv (GLint location, GLsizei count, const GLfloat* v);
++GL_API void         GL_APIENTRY glUniform4i (GLint location, GLint x, GLint y, GLint z, GLint w);
++GL_API void         GL_APIENTRY glUniform4iv (GLint location, GLsizei count, const GLint* v);
++GL_API void         GL_APIENTRY glUniformMatrix2fv (GLint location, GLsizei count, GLboolean transpose, const GLfloat* value);
++GL_API void         GL_APIENTRY glUniformMatrix3fv (GLint location, GLsizei count, GLboolean transpose, const GLfloat* value);
++GL_API void         GL_APIENTRY glUniformMatrix4fv (GLint location, GLsizei count, GLboolean transpose, const GLfloat* value);
++GL_API void         GL_APIENTRY glUseProgram (GLuint program);
++GL_API void         GL_APIENTRY glValidateProgram (GLuint program);
++GL_API void         GL_APIENTRY glVertexAttrib1f (GLuint indx, GLfloat x);
++GL_API void         GL_APIENTRY glVertexAttrib1fv (GLuint indx, const GLfloat* values);
++GL_API void         GL_APIENTRY glVertexAttrib2f (GLuint indx, GLfloat x, GLfloat y);
++GL_API void         GL_APIENTRY glVertexAttrib2fv (GLuint indx, const GLfloat* values);
++GL_API void         GL_APIENTRY glVertexAttrib3f (GLuint indx, GLfloat x, GLfloat y, GLfloat z);
++GL_API void         GL_APIENTRY glVertexAttrib3fv (GLuint indx, const GLfloat* values);
++GL_API void         GL_APIENTRY glVertexAttrib4f (GLuint indx, GLfloat x, GLfloat y, GLfloat z, GLfloat w);
++GL_API void         GL_APIENTRY glVertexAttrib4fv (GLuint indx, const GLfloat* values);
++GL_API void         GL_APIENTRY glVertexAttribPointer (GLuint indx, GLint size, GLenum type, GLboolean normalized, GLsizei stride, const void* ptr);
++GL_API void         GL_APIENTRY glViewport (GLint x, GLint y, GLsizei width, GLsizei height);
++
++#endif
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif /* __gl_h_ */
++
+Index: repo/include/SDL_opengles_ext.h
+===================================================================
+--- /dev/null
++++ repo/include/SDL_opengles_ext.h
+@@ -0,0 +1,714 @@
++#ifndef __glext_h_
++#define __glext_h_
++
++/* $Id: glext.h 1.2 2008/03/31 09:44:00 benji.bowman Exp $ */
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++/*
++** License Applicability. Except to the extent portions of this file are
++** made subject to an alternative license as permitted in the SGI Free
++** Software License B, Version 1.0 (the "License"), the contents of this
++** file are subject only to the provisions of the License. You may not use
++** this file except in compliance with the License. You may obtain a copy
++** of the License at Silicon Graphics, Inc., attn: Legal Services, 1600
++** Amphitheatre Parkway, Mountain View, CA 94043-1351, or at:
++**
++** http://oss.sgi.com/projects/FreeB
++**
++** Note that, as provided in the License, the Software is distributed on an
++** "AS IS" basis, with ALL EXPRESS AND IMPLIED WARRANTIES AND CONDITIONS
++** DISCLAIMED, INCLUDING, WITHOUT LIMITATION, ANY IMPLIED WARRANTIES AND
++** CONDITIONS OF MERCHANTABILITY, SATISFACTORY QUALITY, FITNESS FOR A
++** PARTICULAR PURPOSE, AND NON-INFRINGEMENT.
++**
++** Original Code. The Original Code is: OpenGL Sample Implementation,
++** Version 1.2.1, released January 26, 2000, developed by Silicon Graphics,
++** Inc. The Original Code is Copyright (c) 1991-2000 Silicon Graphics, Inc.
++** Copyright in any portions created by third parties is as indicated
++** elsewhere herein. All Rights Reserved.
++**
++** Additional Notice Provisions: The application programming interfaces
++** established by SGI in conjunction with the Original Code are The
++** OpenGL(R) Graphics System: A Specification (Version 1.2.1), released
++** April 1, 1999; The OpenGL(R) Graphics System Utility Library (Version
++** 1.3), released November 4, 1998; and OpenGL(R) Graphics with the X
++** Window System(R) (Version 1.3), released October 19, 1998. This software
++** was created using the OpenGL(R) version 1.2.1 Sample Implementation
++** published by SGI, but has not been independently verified as being
++** compliant with the OpenGL(R) version 1.2.1 Specification.
++*/
++
++#ifndef GL_APIENTRYP
++#   define GL_APIENTRYP GL_APIENTRY*
++#endif
++
++/*------------------------------------------------------------------------*
++ * OES extension tokens
++ *------------------------------------------------------------------------*/
++
++/* GL_OES_blend_equation_separate */
++#ifndef GL_OES_blend_equation_separate
++/* BLEND_EQUATION_RGB_OES same as BLEND_EQUATION_OES */
++#define GL_BLEND_EQUATION_RGB_OES                               0x8009
++#define GL_BLEND_EQUATION_ALPHA_OES                             0x883D
++#endif
++
++/* GL_OES_blend_func_separate */
++#ifndef GL_OES_blend_func_separate
++#define GL_BLEND_DST_RGB_OES                                    0x80C8
++#define GL_BLEND_SRC_RGB_OES                                    0x80C9
++#define GL_BLEND_DST_ALPHA_OES                                  0x80CA
++#define GL_BLEND_SRC_ALPHA_OES                                  0x80CB
++#endif
++
++/* GL_OES_blend_subtract */
++#ifndef GL_OES_blend_subtract
++#define GL_BLEND_EQUATION_OES                                   0x8009
++#define GL_FUNC_ADD_OES                                         0x8006
++#define GL_FUNC_SUBTRACT_OES                                    0x800A
++#define GL_FUNC_REVERSE_SUBTRACT_OES                            0x800B
++#endif
++
++/* GL_OES_compressed_ETC1_RGB8_texture */
++#ifndef GL_OES_compressed_ETC1_RGB8_texture
++#define GL_ETC1_RGB8_OES                                        0x8D64
++#endif
++
++/* OES_draw_texture */
++#ifndef GL_OES_draw_texture
++#define GL_TEXTURE_CROP_RECT_OES                                0x8B9D
++#endif
++
++/* OES_fixed_point */
++#ifndef GL_OES_fixed_point
++#define GL_FIXED_OES                                            0x140C
++#endif
++
++/* OES_framebuffer_object */
++#ifndef GL_OES_framebuffer_object
++#define GL_FRAMEBUFFER_OES                                      0x8D40
++#define GL_RENDERBUFFER_OES                                     0x8D41
++#define GL_RGBA4_OES                                            0x8056
++#define GL_RGB5_A1_OES                                          0x8057
++#define GL_RGB565_OES                                           0x8D62
++#define GL_DEPTH_COMPONENT16_OES                                0x81A5
++#define GL_RENDERBUFFER_WIDTH_OES                               0x8D42
++#define GL_RENDERBUFFER_HEIGHT_OES                              0x8D43
++#define GL_RENDERBUFFER_INTERNAL_FORMAT_OES                     0x8D44
++#define GL_RENDERBUFFER_RED_SIZE_OES                            0x8D50
++#define GL_RENDERBUFFER_GREEN_SIZE_OES                          0x8D51
++#define GL_RENDERBUFFER_BLUE_SIZE_OES                           0x8D52
++#define GL_RENDERBUFFER_ALPHA_SIZE_OES                          0x8D53
++#define GL_RENDERBUFFER_DEPTH_SIZE_OES                          0x8D54
++#define GL_RENDERBUFFER_STENCIL_SIZE_OES                        0x8D55
++#define GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE_OES               0x8CD0
++#define GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME_OES               0x8CD1
++#define GL_FRAMEBUFFER_ATTACHMENT_TEXTURE_LEVEL_OES             0x8CD2
++#define GL_FRAMEBUFFER_ATTACHMENT_TEXTURE_CUBE_MAP_FACE_OES     0x8CD3
++#define GL_COLOR_ATTACHMENT0_OES                                0x8CE0
++#define GL_DEPTH_ATTACHMENT_OES                                 0x8D00
++#define GL_STENCIL_ATTACHMENT_OES                               0x8D20
++#define GL_FRAMEBUFFER_COMPLETE_OES                             0x8CD5
++#define GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT_OES                0x8CD6
++#define GL_FRAMEBUFFER_INCOMPLETE_MISSING_ATTACHMENT_OES        0x8CD7
++#define GL_FRAMEBUFFER_INCOMPLETE_DIMENSIONS_OES                0x8CD9
++#define GL_FRAMEBUFFER_INCOMPLETE_FORMATS_OES                   0x8CDA
++#define GL_FRAMEBUFFER_UNSUPPORTED_OES                          0x8CDD
++#define GL_FRAMEBUFFER_BINDING_OES                              0x8CA6
++#define GL_RENDERBUFFER_BINDING_OES                             0x8CA7
++#define GL_MAX_RENDERBUFFER_SIZE_OES                            0x84E8
++#define GL_INVALID_FRAMEBUFFER_OPERATION_OES                    0x0506
++#endif
++
++/* OES_matrix_get */
++#ifndef GL_OES_matrix_get
++#define GL_MODELVIEW_MATRIX_FLOAT_AS_INT_BITS_OES               0x898D
++#define GL_PROJECTION_MATRIX_FLOAT_AS_INT_BITS_OES              0x898E
++#define GL_TEXTURE_MATRIX_FLOAT_AS_INT_BITS_OES                 0x898F
++#endif
++
++/* OES_matrix_palette */
++#ifndef GL_OES_matrix_palette
++#define GL_MAX_VERTEX_UNITS_OES                                 0x86A4
++#define GL_MAX_PALETTE_MATRICES_OES                             0x8842
++#define GL_MATRIX_PALETTE_OES                                   0x8840
++#define GL_MATRIX_INDEX_ARRAY_OES                               0x8844
++#define GL_WEIGHT_ARRAY_OES                                     0x86AD
++#define GL_CURRENT_PALETTE_MATRIX_OES                           0x8843
++#define GL_MATRIX_INDEX_ARRAY_SIZE_OES                          0x8846
++#define GL_MATRIX_INDEX_ARRAY_TYPE_OES                          0x8847
++#define GL_MATRIX_INDEX_ARRAY_STRIDE_OES                        0x8848
++#define GL_MATRIX_INDEX_ARRAY_POINTER_OES                       0x8849
++#define GL_MATRIX_INDEX_ARRAY_BUFFER_BINDING_OES                0x8B9E
++#define GL_WEIGHT_ARRAY_SIZE_OES                                0x86AB
++#define GL_WEIGHT_ARRAY_TYPE_OES                                0x86A9
++#define GL_WEIGHT_ARRAY_STRIDE_OES                              0x86AA
++#define GL_WEIGHT_ARRAY_POINTER_OES                             0x86AC
++#define GL_WEIGHT_ARRAY_BUFFER_BINDING_OES                      0x889E
++#endif
++
++/* GL_OES_stencil_wrap */
++#ifndef GL_OES_stencil_wrap
++#define GL_INCR_WRAP_OES                                        0x8507
++#define GL_DECR_WRAP_OES                                        0x8508
++#endif
++
++/* GL_OES_texture_cube_map */
++#ifndef GL_OES_texture_cube_map
++#define GL_NORMAL_MAP_OES                                       0x8511
++#define GL_REFLECTION_MAP_OES                                   0x8512
++#define GL_TEXTURE_CUBE_MAP_OES                                 0x8513
++#define GL_TEXTURE_BINDING_CUBE_MAP_OES                         0x8514
++#define GL_TEXTURE_CUBE_MAP_POSITIVE_X_OES                      0x8515
++#define GL_TEXTURE_CUBE_MAP_NEGATIVE_X_OES                      0x8516
++#define GL_TEXTURE_CUBE_MAP_POSITIVE_Y_OES                      0x8517
++#define GL_TEXTURE_CUBE_MAP_NEGATIVE_Y_OES                      0x8518
++#define GL_TEXTURE_CUBE_MAP_POSITIVE_Z_OES                      0x8519
++#define GL_TEXTURE_CUBE_MAP_NEGATIVE_Z_OES                      0x851A
++#define GL_MAX_CUBE_MAP_TEXTURE_SIZE_OES                        0x851C
++#define GL_TEXTURE_GEN_MODE_OES                                 0x2500
++#define GL_TEXTURE_GEN_STR_OES                                  0x8D60
++#endif
++
++/* GL_OES_texture_mirrored_repeat */
++#ifndef GL_OES_texture_mirrored_repeat
++#define GL_MIRRORED_REPEAT_OES                                  0x8370
++#endif
++
++/* GL_OES_EGL_image */
++#ifndef GL_OES_EGL_image
++typedef void* GLeglImageOES;
++#endif
++
++/* GL_OES_depth24 */
++#ifndef GL_OES_depth24
++#define GL_DEPTH_COMPONENT24_OES                                0x81A6
++#endif
++
++/* GL_OES_depth32 */
++#ifndef GL_OES_depth32
++#define GL_DEPTH_COMPONENT32_OES                                0x81A7
++#endif
++
++/* GL_OES_mapbuffer */
++#ifndef GL_OES_mapbuffer
++#define GL_WRITE_ONLY_OES                                       0x88B9
++#define GL_BUFFER_ACCESS_OES                                    0x88BB
++#define GL_BUFFER_MAPPED_OES                                    0x88BC
++#define GL_BUFFER_MAP_POINTER_OES                               0x88BD
++#endif
++
++/* GL_OES_rgb8_rgba8 */
++#ifndef GL_OES_rgb8_rgba8
++#define GL_RGB8_OES                                             0x8051
++#define GL_RGBA8_OES                                            0x8058
++#endif
++
++/* GL_OES_stencil1 */
++#ifndef GL_OES_stencil1
++#define GL_STENCIL_INDEX1_OES                                   0x8D46
++#endif
++
++/* GL_OES_stencil4 */
++#ifndef GL_OES_stencil4
++#define GL_STENCIL_INDEX4_OES                                   0x8D47
++#endif
++
++/* GL_OES_stencil8 */
++#ifndef GL_OES_stencil8
++#define GL_STENCIL_INDEX8_OES                                   0x8D48
++#endif
++
++/* GL_AMD_compressed_3DC_texture */
++#ifndef GL_AMD_compressed_3DC_texture
++#define GL_3DC_X_AMD                                            0x87F9
++#define GL_3DC_XY_AMD                                           0x87FA
++#endif
++
++/* GL_AMD_compressed_ATC_texture */
++#ifndef GL_AMD_compressed_ATC_texture
++#define GL_ATC_RGB_AMD                                          0x8C92
++#define GL_ATC_RGBA_EXPLICIT_ALPHA_AMD                          0x8C93
++#define GL_ATC_RGBA_INTERPOLATED_ALPHA_AMD                      0x87EE
++#endif
++
++/* GL_EXT_texture_filter_anisotropic */
++#ifndef GL_EXT_texture_filter_anisotropic
++#define GL_TEXTURE_MAX_ANISOTROPY_EXT                           0x84FE
++#define GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT                       0x84FF
++#endif
++
++/* GL_IMG_read_format */
++#ifndef GL_IMG_read_format
++#define GL_UNSIGNED_SHORT_4_4_4_4_REV							0x8365
++#define GL_BGRA													0x80E1
++#endif
++
++/* GL_IMG_texture_format_BGRA8888 */
++#ifndef GL_IMG_texture_format_BGRA8888
++#ifndef GL_BGRA
++#define GL_BGRA													0x80E1
++#endif
++#endif
++
++/* GL_IMG_texture_stream */
++#ifndef GL_IMG_texture_stream
++#define GL_TEXTURE_STREAM_IMG 									0x8C0D
++#define GL_TEXTURE_NUM_STREAM_DEVICES_IMG 						0x8C0E
++#define GL_TEXTURE_STREAM_DEVICE_WIDTH_IMG 						0x8C0F
++#define GL_TEXTURE_STREAM_DEVICE_HEIGHT_IMG 					0x8EA0
++#define GL_TEXTURE_STREAM_DEVICE_FORMAT_IMG 					0x8EA1
++#define GL_TEXTURE_STREAM_DEVICE_NUM_BUFFERS_IMG 				0x8EA2
++#endif
++
++/* GL_IMG_texture_compression_pvrtc */
++#ifndef GL_IMG_texture_compression_pvrtc
++#define GL_COMPRESSED_RGB_PVRTC_4BPPV1_IMG						0x8C00
++#define GL_COMPRESSED_RGB_PVRTC_2BPPV1_IMG						0x8C01
++#define GL_COMPRESSED_RGBA_PVRTC_4BPPV1_IMG						0x8C02
++#define GL_COMPRESSED_RGBA_PVRTC_2BPPV1_IMG						0x8C03
++#endif
++
++/* GL_IMG_vertex_program */
++#ifndef GL_IMG_vertex_program
++#define GL_VERTEX_PROGRAM_ARB									0x8620
++#define GL_MAX_PROGRAM_MATRIX_STACK_DEPTH_ARB					0x862E
++#define GL_MAX_PROGRAM_MATRICES_ARB								0x862F
++#define GL_MAX_VERTEX_ATTRIBS_ARB								0x8869
++#define GL_MAX_PROGRAM_LOCAL_PARAMETERS_ARB						0x88B4
++#define GL_MAX_PROGRAM_ENV_PARAMETERS_ARB						0x88B5
++#define GL_PROGRAM_FORMAT_BINARY_IMG							0x8C0B
++#define GL_MATRIX0_ARB											0x88C0
++#define GL_MATRIX1_ARB											0x88C1
++#define GL_MATRIX2_ARB											0x88C2
++#define GL_MATRIX3_ARB											0x88C3
++#define GL_MATRIX4_ARB											0x88C4
++#define GL_MATRIX5_ARB											0x88C5
++#define GL_MATRIX6_ARB											0x88C6
++#define GL_MATRIX7_ARB											0x88C7
++#define GL_UNSIGNED_BYTE_NORM_IMG								0x8C0C
++#endif
++
++/*------------------------------------------------------------------------*
++ * OES extension functions
++ *------------------------------------------------------------------------*/
++
++/* GL_OES_blend_equation_separate */
++#ifndef GL_OES_blend_equation_separate
++#define GL_OES_blend_equation_separate 1
++#ifdef GL_GLEXT_PROTOTYPES
++GL_API void GL_APIENTRY glBlendEquationSeparateOES (GLenum modeRGB, GLenum modeAlpha);
++#endif
++typedef void (GL_APIENTRYP PFNGLBLENDEQUATIONSEPARATEOESPROC) (GLenum modeRGB, GLenum modeAlpha);
++#endif
++
++/* GL_OES_blend_func_separate */
++#ifndef GL_OES_blend_func_separate
++#define GL_OES_blend_func_separate 1
++#ifdef GL_GLEXT_PROTOTYPES
++GL_API void GL_APIENTRY glBlendFuncSeparateOES (GLenum srcRGB, GLenum dstRGB, GLenum srcAlpha, GLenum dstAlpha);
++#endif
++typedef void (GL_APIENTRYP PFNGLBLENDFUNCSEPARATEOESPROC) (GLenum srcRGB, GLenum dstRGB, GLenum srcAlpha, GLenum dstAlpha);
++#endif
++
++/* GL_OES_blend_subtract */
++#ifndef GL_OES_blend_subtract
++#define GL_OES_blend_subtract 1
++#ifdef GL_GLEXT_PROTOTYPES
++GL_API void GL_APIENTRY glBlendEquationOES (GLenum mode);
++#endif
++typedef void (GL_APIENTRYP PFNGLBLENDEQUATIONOESPROC) (GLenum mode);
++#endif
++
++/* GL_OES_byte_coordinates */
++#ifndef GL_OES_byte_coordinates
++#define GL_OES_byte_coordinates 1
++#endif
++
++/* GL_OES_compressed_ETC1_RGB8_texture */
++#ifndef GL_OES_compressed_ETC1_RGB8_texture
++#define GL_OES_compressed_ETC1_RGB8_texture 1
++#endif
++
++/* GL_OES_draw_texture */
++#ifndef GL_OES_draw_texture
++#define GL_OES_draw_texture 1
++#ifdef GL_GLEXT_PROTOTYPES
++GL_API void GL_APIENTRY glDrawTexsOES (GLshort x, GLshort y, GLshort z, GLshort width, GLshort height);
++GL_API void GL_APIENTRY glDrawTexiOES (GLint x, GLint y, GLint z, GLint width, GLint height);
++GL_API void GL_APIENTRY glDrawTexxOES (GLfixed x, GLfixed y, GLfixed z, GLfixed width, GLfixed height);
++GL_API void GL_APIENTRY glDrawTexsvOES (const GLshort *coords);
++GL_API void GL_APIENTRY glDrawTexivOES (const GLint *coords);
++GL_API void GL_APIENTRY glDrawTexxvOES (const GLfixed *coords);
++GL_API void GL_APIENTRY glDrawTexfOES (GLfloat x, GLfloat y, GLfloat z, GLfloat width, GLfloat height);
++GL_API void GL_APIENTRY glDrawTexfvOES (const GLfloat *coords);
++#endif
++typedef void (GL_APIENTRYP PFNGLDRAWTEXSOESPROC) (GLshort x, GLshort y, GLshort z, GLshort width, GLshort height);
++typedef void (GL_APIENTRYP PFNGLDRAWTEXIOESPROC) (GLint x, GLint y, GLint z, GLint width, GLint height);
++typedef void (GL_APIENTRYP PFNGLDRAWTEXXOESPROC) (GLfixed x, GLfixed y, GLfixed z, GLfixed width, GLfixed height);
++typedef void (GL_APIENTRYP PFNGLDRAWTEXSVOESPROC) (const GLshort *coords);
++typedef void (GL_APIENTRYP PFNGLDRAWTEXIVOESPROC) (const GLint *coords);
++typedef void (GL_APIENTRYP PFNGLDRAWTEXXVOESPROC) (const GLfixed *coords);
++typedef void (GL_APIENTRYP PFNGLDRAWTEXFOESPROC) (GLfloat x, GLfloat y, GLfloat z, GLfloat width, GLfloat height);
++typedef void (GL_APIENTRYP PFNGLDRAWTEXFVOESPROC) (const GLfloat *coords);
++#endif
++
++/* GL_OES_extended_matrix_palette */
++#ifndef GL_OES_extended_matrix_palette
++#define GL_OES_extended_matrix_palette 1
++#endif
++
++/* GL_OES_fixed_point */
++#ifndef GL_OES_fixed_point
++#define GL_OES_fixed_point 1
++#ifdef GL_GLEXT_PROTOTYPES
++GL_API void GL_APIENTRY glAlphaFuncxOES (GLenum func, GLclampx ref);
++GL_API void GL_APIENTRY glClearColorxOES (GLclampx red, GLclampx green, GLclampx blue, GLclampx alpha);
++GL_API void GL_APIENTRY glClearDepthxOES (GLclampx depth);
++GL_API void GL_APIENTRY glClipPlanexOES (GLenum plane, const GLfixed *equation);
++GL_API void GL_APIENTRY glColor4xOES (GLfixed red, GLfixed green, GLfixed blue, GLfixed alpha);
++GL_API void GL_APIENTRY glDepthRangexOES (GLclampx zNear, GLclampx zFar);
++GL_API void GL_APIENTRY glFogxOES (GLenum pname, GLfixed param);
++GL_API void GL_APIENTRY glFogxvOES (GLenum pname, const GLfixed *params);
++GL_API void GL_APIENTRY glFrustumxOES (GLfixed left, GLfixed right, GLfixed bottom, GLfixed top, GLfixed zNear, GLfixed zFar);
++GL_API void GL_APIENTRY glGetClipPlanexOES (GLenum pname, GLfixed eqn[4]);
++GL_API void GL_APIENTRY glGetFixedvOES (GLenum pname, GLfixed *params);
++GL_API void GL_APIENTRY glGetLightxvOES (GLenum light, GLenum pname, GLfixed *params);
++GL_API void GL_APIENTRY glGetMaterialxvOES (GLenum face, GLenum pname, GLfixed *params);
++GL_API void GL_APIENTRY glGetTexEnvxvOES (GLenum env, GLenum pname, GLfixed *params);
++GL_API void GL_APIENTRY glGetTexParameterxvOES (GLenum target, GLenum pname, GLfixed *params);
++GL_API void GL_APIENTRY glLightModelxOES (GLenum pname, GLfixed param);
++GL_API void GL_APIENTRY glLightModelxvOES (GLenum pname, const GLfixed *params);
++GL_API void GL_APIENTRY glLightxOES (GLenum light, GLenum pname, GLfixed param);
++GL_API void GL_APIENTRY glLightxvOES (GLenum light, GLenum pname, const GLfixed *params);
++GL_API void GL_APIENTRY glLineWidthxOES (GLfixed width);
++GL_API void GL_APIENTRY glLoadMatrixxOES (const GLfixed *m);
++GL_API void GL_APIENTRY glMaterialxOES (GLenum face, GLenum pname, GLfixed param);
++GL_API void GL_APIENTRY glMaterialxvOES (GLenum face, GLenum pname, const GLfixed *params);
++GL_API void GL_APIENTRY glMultMatrixxOES (const GLfixed *m);
++GL_API void GL_APIENTRY glMultiTexCoord4xOES (GLenum target, GLfixed s, GLfixed t, GLfixed r, GLfixed q);
++GL_API void GL_APIENTRY glNormal3xOES (GLfixed nx, GLfixed ny, GLfixed nz);
++GL_API void GL_APIENTRY glOrthoxOES (GLfixed left, GLfixed right, GLfixed bottom, GLfixed top, GLfixed zNear, GLfixed zFar);
++GL_API void GL_APIENTRY glPointParameterxOES (GLenum pname, GLfixed param);
++GL_API void GL_APIENTRY glPointParameterxvOES (GLenum pname, const GLfixed *params);
++GL_API void GL_APIENTRY glPointSizexOES (GLfixed size);
++GL_API void GL_APIENTRY glPolygonOffsetxOES (GLfixed factor, GLfixed units);
++GL_API void GL_APIENTRY glRotatexOES (GLfixed angle, GLfixed x, GLfixed y, GLfixed z);
++GL_API void GL_APIENTRY glSampleCoveragexOES (GLclampx value, GLboolean invert);
++GL_API void GL_APIENTRY glScalexOES (GLfixed x, GLfixed y, GLfixed z);
++GL_API void GL_APIENTRY glTexEnvxOES (GLenum target, GLenum pname, GLfixed param);
++GL_API void GL_APIENTRY glTexEnvxvOES (GLenum target, GLenum pname, const GLfixed *params);
++GL_API void GL_APIENTRY glTexParameterxOES (GLenum target, GLenum pname, GLfixed param);
++GL_API void GL_APIENTRY glTexParameterxvOES (GLenum target, GLenum pname, const GLfixed *params);
++GL_API void GL_APIENTRY glTranslatexOES (GLfixed x, GLfixed y, GLfixed z);
++#endif
++typedef void (GL_APIENTRYP PFNGLALPHAFUNCXOESPROC) (GLenum func, GLclampx ref);
++typedef void (GL_APIENTRYP PFNGLCLEARCOLORXOESPROC) (GLclampx red, GLclampx green, GLclampx blue, GLclampx alpha);
++typedef void (GL_APIENTRYP PFNGLCLEARDEPTHXOESPROC) (GLclampx depth);
++typedef void (GL_APIENTRYP PFNGLCLIPPLANEXOESPROC) (GLenum plane, const GLfixed *equation);
++typedef void (GL_APIENTRYP PFNGLCOLOR4XOESPROC) (GLfixed red, GLfixed green, GLfixed blue, GLfixed alpha);
++typedef void (GL_APIENTRYP PFNGLDEPTHRANGEXOESPROC) (GLclampx zNear, GLclampx zFar);
++typedef void (GL_APIENTRYP PFNGLFOGXOESPROC) (GLenum pname, GLfixed param);
++typedef void (GL_APIENTRYP PFNGLFOGXVOESPROC) (GLenum pname, const GLfixed *params);
++typedef void (GL_APIENTRYP PFNGLFRUSTUMXOESPROC) (GLfixed left, GLfixed right, GLfixed bottom, GLfixed top, GLfixed zNear, GLfixed zFar);
++typedef void (GL_APIENTRYP PFNGLGETCLIPPLANEXOESPROC) (GLenum pname, GLfixed eqn[4]);
++typedef void (GL_APIENTRYP PFNGLGETFIXEDVOESPROC) (GLenum pname, GLfixed *params);
++typedef void (GL_APIENTRYP PFNGLGETLIGHTXVOESPROC) (GLenum light, GLenum pname, GLfixed *params);
++typedef void (GL_APIENTRYP PFNGLGETMATERIALXVOESPROC) (GLenum face, GLenum pname, GLfixed *params);
++typedef void (GL_APIENTRYP PFNGLGETTEXENVXVOESPROC) (GLenum env, GLenum pname, GLfixed *params);
++typedef void (GL_APIENTRYP PFNGLGETTEXPARAMETERXVOESPROC) (GLenum target, GLenum pname, GLfixed *params);
++typedef void (GL_APIENTRYP PFNGLLIGHTMODELXOESPROC) (GLenum pname, GLfixed param);
++typedef void (GL_APIENTRYP PFNGLLIGHTMODELXVOESPROC) (GLenum pname, const GLfixed *params);
++typedef void (GL_APIENTRYP PFNGLLIGHTXOESPROC) (GLenum light, GLenum pname, GLfixed param);
++typedef void (GL_APIENTRYP PFNGLLIGHTXVOESPROC) (GLenum light, GLenum pname, const GLfixed *params);
++typedef void (GL_APIENTRYP PFNGLLINEWIDTHXOESPROC) (GLfixed width);
++typedef void (GL_APIENTRYP PFNGLLOADMATRIXXOESPROC) (const GLfixed *m);
++typedef void (GL_APIENTRYP PFNGLMATERIALXOESPROC) (GLenum face, GLenum pname, GLfixed param);
++typedef void (GL_APIENTRYP PFNGLMATERIALXVOESPROC) (GLenum face, GLenum pname, const GLfixed *params);
++typedef void (GL_APIENTRYP PFNGLMULTMATRIXXOESPROC) (const GLfixed *m);
++typedef void (GL_APIENTRYP PFNGLMULTITEXCOORD4XOESPROC) (GLenum target, GLfixed s, GLfixed t, GLfixed r, GLfixed q);
++typedef void (GL_APIENTRYP PFNGLNORMAL3XOESPROC) (GLfixed nx, GLfixed ny, GLfixed nz);
++typedef void (GL_APIENTRYP PFNGLORTHOXOESPROC) (GLfixed left, GLfixed right, GLfixed bottom, GLfixed top, GLfixed zNear, GLfixed zFar);
++typedef void (GL_APIENTRYP PFNGLPOINTPARAMETERXOESPROC) (GLenum pname, GLfixed param);
++typedef void (GL_APIENTRYP PFNGLPOINTPARAMETERXVOESPROC) (GLenum pname, const GLfixed *params);
++typedef void (GL_APIENTRYP PFNGLPOINTSIZEXOESPROC) (GLfixed size);
++typedef void (GL_APIENTRYP PFNGLPOLYGONOFFSETXOESPROC) (GLfixed factor, GLfixed units);
++typedef void (GL_APIENTRYP PFNGLROTATEXOESPROC) (GLfixed angle, GLfixed x, GLfixed y, GLfixed z);
++typedef void (GL_APIENTRYP PFNGLSAMPLECOVERAGEXOESPROC) (GLclampx value, GLboolean invert);
++typedef void (GL_APIENTRYP PFNGLSCALEXOESPROC) (GLfixed x, GLfixed y, GLfixed z);
++typedef void (GL_APIENTRYP PFNGLTEXENVXOESPROC) (GLenum target, GLenum pname, GLfixed param);
++typedef void (GL_APIENTRYP PFNGLTEXENVXVOESPROC) (GLenum target, GLenum pname, const GLfixed *params);
++typedef void (GL_APIENTRYP PFNGLTEXPARAMETERXOESPROC) (GLenum target, GLenum pname, GLfixed param);
++typedef void (GL_APIENTRYP PFNGLTEXPARAMETERXVOESPROC) (GLenum target, GLenum pname, const GLfixed *params);
++typedef void (GL_APIENTRYP PFNGLTRANSLATEXOESPROC) (GLfixed x, GLfixed y, GLfixed z);
++#endif
++
++/* GL_OES_framebuffer_object */
++#ifndef GL_OES_framebuffer_object
++#define GL_OES_framebuffer_object 1
++#ifdef GL_GLEXT_PROTOTYPES
++GL_API GLboolean GL_APIENTRY glIsRenderbufferOES (GLuint renderbuffer);
++GL_API void GL_APIENTRY glBindRenderbufferOES (GLenum target, GLuint renderbuffer);
++GL_API void GL_APIENTRY glDeleteRenderbuffersOES (GLsizei n, const GLuint* renderbuffers);
++GL_API void GL_APIENTRY glGenRenderbuffersOES (GLsizei n, GLuint* renderbuffers);
++GL_API void GL_APIENTRY glRenderbufferStorageOES (GLenum target, GLenum internalformat, GLsizei width, GLsizei height);
++GL_API void GL_APIENTRY glGetRenderbufferParameterivOES (GLenum target, GLenum pname, GLint* params);
++GL_API GLboolean GL_APIENTRY glIsFramebufferOES (GLuint framebuffer);
++GL_API void GL_APIENTRY glBindFramebufferOES (GLenum target, GLuint framebuffer);
++GL_API void GL_APIENTRY glDeleteFramebuffersOES (GLsizei n, const GLuint* framebuffers);
++GL_API void GL_APIENTRY glGenFramebuffersOES (GLsizei n, GLuint* framebuffers);
++GL_API GLenum GL_APIENTRY glCheckFramebufferStatusOES (GLenum target);
++GL_API void GL_APIENTRY glFramebufferRenderbufferOES (GLenum target, GLenum attachment, GLenum renderbuffertarget, GLuint renderbuffer);
++GL_API void GL_APIENTRY glFramebufferTexture2DOES (GLenum target, GLenum attachment, GLenum textarget, GLuint texture, GLint level);
++GL_API void GL_APIENTRY glGetFramebufferAttachmentParameterivOES (GLenum target, GLenum attachment, GLenum pname, GLint* params);
++GL_API void GL_APIENTRY glGenerateMipmapOES (GLenum target);
++#endif
++typedef GLboolean (GL_APIENTRYP PFNGLISRENDERBUFFEROESPROC) (GLuint renderbuffer);
++typedef void (GL_APIENTRYP PFNGLBINDRENDERBUFFEROESPROC) (GLenum target, GLuint renderbuffer);
++typedef void (GL_APIENTRYP PFNGLDELETERENDERBUFFERSOESPROC) (GLsizei n, const GLuint* renderbuffers);
++typedef void (GL_APIENTRYP PFNGLGENRENDERBUFFERSOESPROC) (GLsizei n, GLuint* renderbuffers);
++typedef void (GL_APIENTRYP PFNGLRENDERBUFFERSTORAGEOESPROC) (GLenum target, GLenum internalformat, GLsizei width, GLsizei height);
++typedef void (GL_APIENTRYP PFNGLGETRENDERBUFFERPARAMETERIVOESPROC) (GLenum target, GLenum pname, GLint* params);
++typedef GLboolean (GL_APIENTRYP PFNGLISFRAMEBUFFEROESPROC) (GLuint framebuffer);
++typedef void (GL_APIENTRYP PFNGLBINDFRAMEBUFFEROESPROC) (GLenum target, GLuint framebuffer);
++typedef void (GL_APIENTRYP PFNGLDELETEFRAMEBUFFERSOESPROC) (GLsizei n, const GLuint* framebuffers);
++typedef void (GL_APIENTRYP PFNGLGENFRAMEBUFFERSOESPROC) (GLsizei n, GLuint* framebuffers);
++typedef GLenum (GL_APIENTRYP PFNGLCHECKFRAMEBUFFERSTATUSOESPROC) (GLenum target);
++typedef void (GL_APIENTRYP PFNGLFRAMEBUFFERRENDERBUFFEROESPROC) (GLenum target, GLenum attachment, GLenum renderbuffertarget, GLuint renderbuffer);
++typedef void (GL_APIENTRYP PFNGLFRAMEBUFFERTEXTURE2DOESPROC) (GLenum target, GLenum attachment, GLenum textarget, GLuint texture, GLint level);
++typedef void (GL_APIENTRYP PFNGLGETFRAMEBUFFERATTACHMENTPARAMETERIVOESPROC) (GLenum target, GLenum attachment, GLenum pname, GLint* params);
++typedef void (GL_APIENTRYP PFNGLGENERATEMIPMAPOESPROC) (GLenum target);
++#endif
++
++/* GL_OES_matrix_get */
++#ifndef GL_OES_matrix_get
++#define GL_OES_matrix_get 1
++#endif
++
++/* GL_OES_matrix_palette */
++#ifndef GL_OES_matrix_palette
++#define GL_OES_matrix_palette 1
++#ifdef GL_GLEXT_PROTOTYPES
++GL_API void GL_APIENTRY glCurrentPaletteMatrixOES (GLuint matrixpaletteindex);
++GL_API void GL_APIENTRY glLoadPaletteFromModelViewMatrixOES (void);
++GL_API void GL_APIENTRY glMatrixIndexPointerOES (GLint size, GLenum type, GLsizei stride, const GLvoid *pointer);
++GL_API void GL_APIENTRY glWeightPointerOES (GLint size, GLenum type, GLsizei stride, const GLvoid *pointer);
++#endif
++typedef void (GL_APIENTRYP PFNGLCURRENTPALETTEMATRIXOESPROC) (GLuint matrixpaletteindex);
++typedef void (GL_APIENTRYP PFNGLLOADPALETTEFROMMODELVIEWMATRIXOESPROC) (void);
++typedef void (GL_APIENTRYP PFNGLMATRIXINDEXPOINTEROESPROC) (GLint size, GLenum type, GLsizei stride, const GLvoid *pointer);
++typedef void (GL_APIENTRYP PFNGLWEIGHTPOINTEROESPROC) (GLint size, GLenum type, GLsizei stride, const GLvoid *pointer);
++#endif
++
++/* GL_OES_query_matrix */
++#ifndef GL_OES_query_matrix
++#define GL_OES_query_matrix 1
++#ifdef GL_GLEXT_PROTOTYPES
++GL_API GLbitfield GL_APIENTRY glQueryMatrixxOES (GLfixed mantissa[16], GLint exponent[16]);
++#endif
++typedef GLbitfield (GL_APIENTRYP PFNGLQUERYMATRIXXOESPROC) (GLfixed mantissa[16], GLint exponent[16]);
++#endif
++
++/* GL_OES_single_precision */
++#ifndef GL_OES_single_precision
++#define GL_OES_single_precision 1
++#ifdef GL_GLEXT_PROTOTYPES
++GL_API void GL_APIENTRY glDepthRangefOES (GLclampf zNear, GLclampf zFar);
++GL_API void GL_APIENTRY glFrustumfOES (GLfloat left, GLfloat right, GLfloat bottom, GLfloat top, GLfloat zNear, GLfloat zFar);
++GL_API void GL_APIENTRY glOrthofOES (GLfloat left, GLfloat right, GLfloat bottom, GLfloat top, GLfloat zNear, GLfloat zFar);
++GL_API void GL_APIENTRY glClipPlanefOES (GLenum plane, const GLfloat *equation);
++GL_API void GL_APIENTRY glGetClipPlanefOES (GLenum pname, GLfloat eqn[4]);
++GL_API void GL_APIENTRY glClearDepthfOES (GLclampf depth);
++#endif
++typedef void (GL_APIENTRYP PFNGLDEPTHRANGEFOESPROC) (GLclampf zNear, GLclampf zFar);
++typedef void (GL_APIENTRYP PFNGLFRUSTUMFOESPROC) (GLfloat left, GLfloat right, GLfloat bottom, GLfloat top, GLfloat zNear, GLfloat zFar);
++typedef void (GL_APIENTRYP PFNGLORTHOFOESPROC) (GLfloat left, GLfloat right, GLfloat bottom, GLfloat top, GLfloat zNear, GLfloat zFar);
++typedef void (GL_APIENTRYP PFNGLCLIPPLANEFOESPROC) (GLenum plane, const GLfloat *equation);
++typedef void (GL_APIENTRYP PFNGLGETCLIPPLANEFOESPROC) (GLenum pname, GLfloat eqn[4]);
++typedef void (GL_APIENTRYP PFNGLCLEARDEPTHFOESPROC) (GLclampf depth);
++#endif
++
++/* GL_OES_stencil_wrap */
++#ifndef GL_OES_stencil_wrap
++#define GL_OES_stencil_wrap 1
++#endif
++
++/* GL_OES_texture_cube_map */
++#ifndef GL_OES_texture_cube_map
++#define GL_OES_texture_cube_map 1
++#ifdef GL_GLEXT_PROTOTYPES
++GL_API void GL_APIENTRY glTexGenfOES (GLenum coord, GLenum pname, GLfloat param);
++GL_API void GL_APIENTRY glTexGenfvOES (GLenum coord, GLenum pname, const GLfloat *params);
++GL_API void GL_APIENTRY glTexGeniOES (GLenum coord, GLenum pname, GLint param);
++GL_API void GL_APIENTRY glTexGenivOES (GLenum coord, GLenum pname, const GLint *params);
++GL_API void GL_APIENTRY glTexGenxOES (GLenum coord, GLenum pname, GLfixed param);
++GL_API void GL_APIENTRY glTexGenxvOES (GLenum coord, GLenum pname, const GLfixed *params);
++GL_API void GL_APIENTRY glGetTexGenfvOES (GLenum coord, GLenum pname, GLfloat *params);
++GL_API void GL_APIENTRY glGetTexGenivOES (GLenum coord, GLenum pname, GLint *params);
++GL_API void GL_APIENTRY glGetTexGenxvOES (GLenum coord, GLenum pname, GLfixed *params);
++#endif
++typedef void (GL_APIENTRYP PFNGLTEXGENFOESPROC) (GLenum coord, GLenum pname, GLfloat param);
++typedef void (GL_APIENTRYP PFNGLTEXGENFVOESPROC) (GLenum coord, GLenum pname, const GLfloat *params);
++typedef void (GL_APIENTRYP PFNGLTEXGENIOESPROC) (GLenum coord, GLenum pname, GLint param);
++typedef void (GL_APIENTRYP PFNGLTEXGENIVOESPROC) (GLenum coord, GLenum pname, const GLint *params);
++typedef void (GL_APIENTRYP PFNGLTEXGENXOESPROC) (GLenum coord, GLenum pname, GLfixed param);
++typedef void (GL_APIENTRYP PFNGLTEXGENXVOESPROC) (GLenum coord, GLenum pname, const GLfixed *params);
++typedef void (GL_APIENTRYP PFNGLGETTEXGENFVOESPROC) (GLenum coord, GLenum pname, GLfloat *params);
++typedef void (GL_APIENTRYP PFNGLGETTEXGENIVOESPROC) (GLenum coord, GLenum pname, GLint *params);
++typedef void (GL_APIENTRYP PFNGLGETTEXGENXVOESPROC) (GLenum coord, GLenum pname, GLfixed *params);
++#endif
++
++/* GL_OES_texture_env_crossbar */
++#ifndef GL_OES_texture_env_crossbar
++#define GL_OES_texture_env_crossbar 1
++#endif
++
++/* GL_OES_texture_mirrored_repeat */
++#ifndef GL_OES_texture_mirrored_repeat
++#define GL_OES_texture_mirrored_repeat 1
++#endif
++
++/* GL_OES_EGL_image */
++#ifndef GL_OES_EGL_image
++#define GL_OES_EGL_image 1
++#ifdef GL_GLEXT_PROTOTYPES
++GL_API void GL_APIENTRY glEGLImageTargetTexture2DOES (GLenum target, GLeglImageOES image);
++GL_API void GL_APIENTRY glEGLImageTargetRenderbufferStorageOES (GLenum target, GLeglImageOES image);
++#endif
++typedef void (GL_APIENTRYP PFNGLEGLIMAGETARGETTEXTURE2DOESPROC) (GLenum target, GLeglImageOES image);
++typedef void (GL_APIENTRYP PFNGLEGLIMAGETARGETRENDERBUFFERSTORAGEOESPROC) (GLenum target, GLeglImageOES image);
++#endif
++
++/* GL_OES_depth24 */
++#ifndef GL_OES_depth24
++#define GL_OES_depth24 1
++#endif
++
++/* GL_OES_depth32 */
++#ifndef GL_OES_depth32
++#define GL_OES_depth32 1
++#endif
++
++/* GL_OES_element_index_uint */
++#ifndef GL_OES_element_index_uint
++#define GL_OES_element_index_uint 1
++#endif
++
++/* GL_OES_fbo_render_mipmap */
++#ifndef GL_OES_fbo_render_mipmap
++#define GL_OES_fbo_render_mipmap 1
++#endif
++
++/* GL_OES_mapbuffer */
++#ifndef GL_OES_mapbuffer
++#define GL_OES_mapbuffer 1
++#ifdef GL_GLEXT_PROTOTYPES
++GL_API void* GL_APIENTRY glMapBufferOES (GLenum target, GLenum access);
++GL_API GLboolean GL_APIENTRY glUnmapBufferOES (GLenum target);
++GL_API void GL_APIENTRY glGetBufferPointervOES (GLenum target, GLenum pname, void** params);
++#endif
++typedef void* (GL_APIENTRYP PFNGLMAPBUFFEROESPROC) (GLenum target, GLenum access);
++typedef GLboolean (GL_APIENTRYP PFNGLUNMAPBUFFEROESPROC) (GLenum target);
++typedef void (GL_APIENTRYP PFNGLGETBUFFERPOINTERVOESPROC) (GLenum target, GLenum pname, void** params);
++#endif
++
++/* GL_OES_rgb8_rgba8 */
++#ifndef GL_OES_rgb8_rgba8
++#define GL_OES_rgb8_rgba8 1
++#endif
++
++/* GL_OES_stencil1 */
++#ifndef GL_OES_stencil1
++#define GL_OES_stencil1 1
++#endif
++
++/* GL_OES_stencil4 */
++#ifndef GL_OES_stencil4
++#define GL_OES_stencil4 1
++#endif
++
++/* GL_OES_stencil8 */
++#ifndef GL_OES_stencil8
++#define GL_OES_stencil8 1
++#endif
++
++/* GL_AMD_compressed_3DC_texture */
++#ifndef GL_AMD_compressed_3DC_texture
++#define GL_AMD_compressed_3DC_texture 1
++#endif
++
++/* GL_AMD_compressed_ATC_texture */
++#ifndef GL_AMD_compressed_ATC_texture
++#define GL_AMD_compressed_ATC_texture 1
++#endif
++
++/* GL_EXT_texture_filter_anisotropic */
++#ifndef GL_EXT_texture_filter_anisotropic
++#define GL_EXT_texture_filter_anisotropic 1
++#endif
++
++/* GL_IMG_read_format */
++#ifndef GL_IMG_read_format
++#define GL_IMG_read_format 1
++#endif
++
++/* GL_IMG_texture_format_BGRA8888 */
++#ifndef GL_IMG_texture_format_BGRA8888
++#define GL_IMG_texture_format_BGRA8888 1
++#endif
++
++/* GL_IMG_texture_stream */
++#ifndef GL_IMG_texture_stream
++#define GL_IMG_texture_stream 1
++#ifdef GL_GLEXT_PROTOTYPES
++GL_API void GL_APIENTRY glTexBindStreamIMG(GLint device, GLint deviceoffset);
++GL_API void GL_APIENTRY glGetTexStreamDeviceAttributeivIMG(GLint device, GLenum pname, GLint *params);
++GL_API const GLubyte * GL_APIENTRY glGetTexStreamDeviceNameIMG(GLint device);
++#endif
++
++typedef void (GL_APIENTRYP PFNGLTEXBINDSTREAMIMGPROC) (GLint device, GLint deviceoffset);
++typedef const GLubyte *(GL_APIENTRYP PFNGLGETTEXSTREAMDEVICENAMEIMGPROC) (GLenum target);
++typedef void (GL_APIENTRYP PFNGLGETTEXSTREAMDEVICEATTRIBUTEIVIMGPROC) (GLenum target, GLenum pname, GLint *params);
++
++#endif
++
++/* GL_IMG_texture_compression_pvrtc */
++#ifndef GL_IMG_texture_compression_pvrtc
++#define GL_IMG_texture_compression_pvrtc 1
++#endif
++
++#ifndef GL_IMG_vertex_program
++#define GL_IMG_vertex_program 1
++#ifdef GL_GLEXT_PROTOTYPES
++GL_API void GL_APIENTRY glVertexAttrib4fARB(GLuint index, GLfloat x, GLfloat y, GLfloat z, GLfloat w);
++GL_API void GL_APIENTRY glProgramEnvParameter4fARB(GLenum target, GLuint index, GLfloat x, GLfloat y, GLfloat z, GLfloat w);
++GL_API void GL_APIENTRY glProgramEnvParameter4fvARB(GLenum target, GLuint index, const GLfloat *params);
++GL_API void GL_APIENTRY glProgramLocalParameter4fARB(GLenum target, GLuint index, GLfloat x, GLfloat y, GLfloat z, GLfloat w);
++GL_API void GL_APIENTRY glProgramLocalParameter4fvARB(GLenum target, GLuint index, const GLfloat *params);
++GL_API void GL_APIENTRY glVertexAttrib4xIMG(GLuint index, GLfixed x, GLfixed y, GLfixed z, GLfixed w);
++GL_API void GL_APIENTRY glProgramLocalParameter4xIMG(GLenum target, GLuint index, GLfixed x, GLfixed y, GLfixed z, GLfixed w);
++GL_API void GL_APIENTRY glProgramLocalParameter4xvIMG(GLenum target, GLuint index, const GLfixed *params);
++GL_API void GL_APIENTRY glProgramEnvParameter4xIMG(GLenum target, GLuint index, GLfixed x, GLfixed y, GLfixed z, GLfixed w);
++GL_API void GL_APIENTRY glProgramEnvParameter4xvIMG(GLenum target, GLuint index, const GLfixed *params);
++GL_API void GL_APIENTRY glVertexAttribPointerARB(GLuint index, GLsizei size, GLenum type, GLboolean normalized, GLsizei stride, const GLvoid *pointer);
++GL_API void GL_APIENTRY glEnableVertexAttribArrayARB(GLuint index);
++GL_API void GL_APIENTRY glDisableVertexAttribArrayARB(GLuint index);
++GL_API void GL_APIENTRY glProgramStringARB(GLenum target, GLenum format, GLsizei len, const void *string);
++GL_API void GL_APIENTRY glBindProgramARB(GLenum target, GLuint program);
++GL_API void GL_APIENTRY glDeleteProgramsARB(GLsizei n, const GLuint *programs);
++GL_API void GL_APIENTRY glGenProgramsARB(GLsizei n, GLuint *programs);
++#endif
++#endif
++
++
++
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif /* __glext_h_ */
++
+Index: repo/Makefile.in
+===================================================================
+--- repo.orig/Makefile.in
++++ repo/Makefile.in
+@@ -42,7 +42,7 @@ SDLMAIN_OBJECTS = @SDLMAIN_OBJECTS@
+ 
+ DIST = acinclude autogen.sh Borland.html Borland.zip BUGS build-scripts configure configure.in COPYING CREDITS CWprojects.sea.bin docs docs.html include INSTALL Makefile.dc Makefile.minimal Makefile.in MPWmake.sea.bin README* sdl-config.in sdl.m4 sdl.pc.in SDL.qpg.in SDL.spec SDL.spec.in src test TODO VisualCE.zip VisualC.html VisualC.zip Watcom-OS2.zip Watcom-Win32.zip symbian.zip WhatsNew Xcode.tar.gz
+ 
+-HDRS = SDL.h SDL_active.h SDL_audio.h SDL_byteorder.h SDL_cdrom.h SDL_cpuinfo.h SDL_endian.h SDL_error.h SDL_events.h SDL_getenv.h SDL_joystick.h SDL_keyboard.h SDL_keysym.h SDL_loadso.h SDL_main.h SDL_mouse.h SDL_mutex.h SDL_name.h SDL_opengl.h SDL_platform.h SDL_quit.h SDL_rwops.h SDL_stdinc.h SDL_syswm.h SDL_thread.h SDL_timer.h SDL_types.h SDL_version.h SDL_video.h begin_code.h close_code.h
++HDRS = SDL.h SDL_active.h SDL_audio.h SDL_byteorder.h SDL_cdrom.h SDL_cpuinfo.h SDL_endian.h SDL_error.h SDL_events.h SDL_getenv.h SDL_joystick.h SDL_keyboard.h SDL_keysym.h SDL_loadso.h SDL_main.h SDL_mouse.h SDL_mutex.h SDL_name.h SDL_opengl.h SDL_opengles.h SDL_opengles_ext.h SDL_platform.h SDL_quit.h SDL_rwops.h SDL_stdinc.h SDL_syswm.h SDL_thread.h SDL_timer.h SDL_types.h SDL_version.h SDL_video.h begin_code.h close_code.h
+ 
+ LT_AGE      = @LT_AGE@
+ LT_CURRENT  = @LT_CURRENT@
+Index: repo/src/video/x11/SDL_x11modes.c
+===================================================================
+--- repo.orig/src/video/x11/SDL_x11modes.c
++++ repo/src/video/x11/SDL_x11modes.c
+@@ -1072,7 +1072,7 @@ int X11_EnterFullScreen(_THIS)
+     /* We may need to refresh the screen at this point (no backing store)
+        We also don't get an event, which is why we explicitly refresh. */
+     if ( this->screen ) {
+-        if ( this->screen->flags & SDL_OPENGL ) {
++        if ( this->screen->flags & (SDL_OPENGL|SDL_OPENGLES) ) {
+             SDL_PrivateExpose();
+         } else {
+             X11_RefreshDisplay(this);
+@@ -1134,7 +1134,7 @@ int X11_LeaveFullScreen(_THIS)
+     /* We may need to refresh the screen at this point (no backing store)
+        We also don't get an event, which is why we explicitly refresh. */
+     if ( this->screen ) {
+-        if ( this->screen->flags & SDL_OPENGL ) {
++        if ( this->screen->flags & (SDL_OPENGL|SDL_OPENGLES) ) {
+             SDL_PrivateExpose();
+         } else {
+             X11_RefreshDisplay(this);
+Index: repo/src/video/x11/SDL_x11events.c
+===================================================================
+--- repo.orig/src/video/x11/SDL_x11events.c
++++ repo/src/video/x11/SDL_x11events.c
+@@ -830,7 +830,7 @@ printf("ConfigureNotify! (resize: %dx%d)
+ 			}
+ 		    } else {
+ 			/* OpenGL windows need to know about the change */
+-			if ( SDL_VideoSurface->flags & SDL_OPENGL ) {
++			if ( SDL_VideoSurface->flags & (SDL_OPENGL|SDL_OPENGLES) ) {
+ 				SDL_PrivateExpose();
+ 			}
+ 		    }
+Index: repo/src/video/x11/SDL_x11image.c
+===================================================================
+--- repo.orig/src/video/x11/SDL_x11image.c
++++ repo/src/video/x11/SDL_x11image.c
+@@ -185,7 +185,7 @@ int X11_ResizeImage(_THIS, SDL_Surface *
+ 	int retval;
+ 
+ 	X11_DestroyImage(this, screen);
+-        if ( flags & SDL_OPENGL ) {  /* No image when using GL */
++        if ( flags & (SDL_OPENGL|SDL_OPENGLES) ) {  /* No image when using GL */
+         	retval = 0;
+         } else {
+ 		retval = X11_SetupImage(this, screen);

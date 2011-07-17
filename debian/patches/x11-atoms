@@ -1,0 +1,189 @@
+Index: repo/src/video/x11/SDL_x11atoms.h
+===================================================================
+--- /dev/null
++++ repo/src/video/x11/SDL_x11atoms.h
+@@ -0,0 +1,29 @@
++/*
++    SDL - Simple DirectMedia Layer
++    Copyright (C) 1997-2009 Sam Lantinga
++
++    This library is free software; you can redistribute it and/or
++    modify it under the terms of the GNU Library General Public
++    License as published by the Free Software Foundation; either
++    version 2 of the License, or (at your option) any later version.
++
++    This library is distributed in the hope that it will be useful,
++    but WITHOUT ANY WARRANTY; without even the implied warranty of
++    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++    Library General Public License for more details.
++
++    You should have received a copy of the GNU Library General Public
++    License along with this library; if not, write to the Free
++    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
++
++    Sam Lantinga
++    slouken@libsdl.org
++*/
++
++SDL_X11_ATOM(WM_DELETE_WINDOW, "WM_DELETE_WINDOW")
++SDL_X11_ATOM(_NET_WM_NAME, "_NET_WM_NAME")
++SDL_X11_ATOM(_NET_WM_ICON_NAME, "_NET_WM_ICON_NAME")
++SDL_X11_ATOM(_NET_WM_PID, "_NET_WM_PID")
++SDL_X11_ATOM(_NET_WM_STATE, "_NET_WM_STATE")
++SDL_X11_ATOM(_NET_WM_STATE_FULLSCREEN, "_NET_WM_STATE_FULLSCREEN")
++
+Index: repo/src/video/x11/SDL_x11video.c
+===================================================================
+--- repo.orig/src/video/x11/SDL_x11video.c
++++ repo/src/video/x11/SDL_x11video.c
+@@ -58,6 +58,12 @@
+ #include <locale.h>
+ #endif
+ 
++static const char * atom_names[ATOM_COUNT] = {
++#define SDL_X11_ATOM(id, name) name,
++#include "SDL_x11atoms.h"
++#undef SDL_X11_ATOM
++};
++
+ /* Initialization/Query functions */
+ static int X11_VideoInit(_THIS, SDL_PixelFormat *vformat);
+ static SDL_Surface *X11_SetVideoMode(_THIS, SDL_Surface *current, int width, int height, int bpp, Uint32 flags);
+@@ -325,9 +331,6 @@ static void create_aux_windows(_THIS)
+     unsigned long app_event_mask;
+     int def_vis = (SDL_Visual == DefaultVisual(SDL_Display, SDL_Screen));
+ 
+-    /* Look up some useful Atoms */
+-    WM_DELETE_WINDOW = XInternAtom(SDL_Display, "WM_DELETE_WINDOW", False);
+-
+     /* Don't create any extra windows if we are being managed */
+     if ( SDL_windowid ) {
+ 	FSwindow = 0;
+@@ -553,7 +556,7 @@ static void create_aux_windows(_THIS)
+ 	#endif
+ 
+ 	/* Allow the window to be deleted by the window manager */
+-	XSetWMProtocols(SDL_Display, WMwindow, &WM_DELETE_WINDOW, 1);
++	XSetWMProtocols(SDL_Display, WMwindow, &atom(WM_DELETE_WINDOW), 1);
+ }
+ 
+ static int X11_VideoInit(_THIS, SDL_PixelFormat *vformat)
+@@ -618,6 +621,9 @@ static int X11_VideoInit(_THIS, SDL_Pixe
+ 	/* use default screen (from $DISPLAY) */
+ 	SDL_Screen = DefaultScreen(SDL_Display);
+ 
++    /* Look up some useful Atoms */
++    XInternAtoms(SDL_Display, (char**) atom_names, ATOM_COUNT, False, this->hidden->atoms);
++
+ #ifndef NO_SHARED_MEMORY
+ 	/* Check for MIT shared memory extension */
+ 	use_mitshm = 0;
+Index: repo/src/video/x11/SDL_x11video.h
+===================================================================
+--- repo.orig/src/video/x11/SDL_x11video.h
++++ repo/src/video/x11/SDL_x11video.h
+@@ -49,6 +49,13 @@
+ 
+ #include "SDL_x11dyn.h"
+ 
++enum {
++#define SDL_X11_ATOM(id, name) id,
++#include "SDL_x11atoms.h"
++#undef SDL_X11_ATOM
++ATOM_COUNT
++};
++
+ /* Hidden "this" pointer for the video functions */
+ #define _THIS	SDL_VideoDevice *this
+ 
+@@ -61,7 +68,7 @@ struct SDL_PrivateVideoData {
+     Window WMwindow;		/* Input window, managed by window manager */
+     Window FSwindow;		/* Fullscreen window, completely unmanaged */
+     Window SDL_Window;		/* Shared by both displays (no X security?) */
+-    Atom WM_DELETE_WINDOW;	/* "close-window" protocol atom */
++    Atom atoms[ATOM_COUNT];	/* X11 protocol atoms */
+     WMcursor *BlankCursor;	/* The invisible cursor */
+     XIM X11_IM;		/* Used to communicate with the input method (IM) server */
+     XIC X11_IC;		/* Used for retaining the state, properties, and semantics of communication with                                                  the input method (IM) server */
+@@ -166,7 +173,6 @@ struct SDL_PrivateVideoData {
+ #define WMwindow		(this->hidden->WMwindow)
+ #define FSwindow		(this->hidden->FSwindow)
+ #define SDL_Window		(this->hidden->SDL_Window)
+-#define WM_DELETE_WINDOW	(this->hidden->WM_DELETE_WINDOW)
+ #define SDL_BlankCursor		(this->hidden->BlankCursor)
+ #define SDL_IM			(this->hidden->X11_IM)
+ #define SDL_IC			(this->hidden->X11_IC)
+@@ -206,6 +212,8 @@ struct SDL_PrivateVideoData {
+ #define SDL_iconcolors		(this->hidden->iconcolors)
+ #define allow_screensaver	(this->hidden->allow_screensaver)
+ 
++#define atom(i)             (this->hidden->atoms[i])
++
+ /* Some versions of XFree86 have bugs - detect if this is one of them */
+ #define BUGGY_XFREE86(condition, buggy_version) \
+ ((SDL_strcmp(ServerVendor(SDL_Display), "The XFree86 Project, Inc") == 0) && \
+Index: repo/src/video/x11/SDL_x11wm.c
+===================================================================
+--- repo.orig/src/video/x11/SDL_x11wm.c
++++ repo/src/video/x11/SDL_x11wm.c
+@@ -246,17 +246,6 @@ void X11_SetCaptionNoLock(_THIS, const c
+ 	XTextProperty titleprop, iconprop;
+ 	Status status;
+ 
+-#ifdef X_HAVE_UTF8_STRING
+-	Atom _NET_WM_NAME = 0;
+-	Atom _NET_WM_ICON_NAME = 0;
+-
+-	/* Look up some useful Atoms */
+-	if (SDL_X11_HAVE_UTF8) {
+-		_NET_WM_NAME = XInternAtom(SDL_Display, "_NET_WM_NAME", False);
+-		_NET_WM_ICON_NAME = XInternAtom(SDL_Display, "_NET_WM_ICON_NAME", False);
+-	}
+-#endif
+-
+ 	if ( title != NULL ) {
+ 		char *title_locale = SDL_iconv_utf8_locale(title);
+ 		if ( !title_locale ) {
+@@ -274,7 +263,7 @@ void X11_SetCaptionNoLock(_THIS, const c
+ 			status = Xutf8TextListToTextProperty(SDL_Display,
+ 					(char **)&title, 1, XUTF8StringStyle, &titleprop);
+ 			if ( status == Success ) {
+-				XSetTextProperty(SDL_Display, WMwindow, &titleprop, _NET_WM_NAME);
++				XSetTextProperty(SDL_Display, WMwindow, &titleprop, atom(_NET_WM_NAME));
+ 				XFree(titleprop.value);
+ 			}
+ 		}
+@@ -297,7 +286,7 @@ void X11_SetCaptionNoLock(_THIS, const c
+ 			status = Xutf8TextListToTextProperty(SDL_Display,
+ 					(char **)&icon, 1, XUTF8StringStyle, &iconprop);
+ 			if ( status == Success ) {
+-				XSetTextProperty(SDL_Display, WMwindow, &iconprop, _NET_WM_ICON_NAME);
++				XSetTextProperty(SDL_Display, WMwindow, &iconprop, atom(_NET_WM_ICON_NAME));
+ 				XFree(iconprop.value);
+ 			}
+ 		}
+Index: repo/src/video/x11/SDL_x11events.c
+===================================================================
+--- repo.orig/src/video/x11/SDL_x11events.c
++++ repo/src/video/x11/SDL_x11events.c
+@@ -839,7 +839,7 @@ printf("ConfigureNotify! (resize: %dx%d)
+ 	    /* Have we been requested to quit (or another client message?) */
+ 	    case ClientMessage: {
+ 		if ( (xevent.xclient.format == 32) &&
+-		     (xevent.xclient.data.l[0] == WM_DELETE_WINDOW) )
++		     (xevent.xclient.data.l[0] == atom(WM_DELETE_WINDOW)) )
+ 		{
+ 			posted = SDL_PrivateQuit();
+ 		} else
+Index: repo/src/video/x11/SDL_x11sym.h
+===================================================================
+--- repo.orig/src/video/x11/SDL_x11sym.h
++++ repo/src/video/x11/SDL_x11sym.h
+@@ -65,6 +65,7 @@ SDL_X11_SYM(Status,XIconifyWindow,(Displ
+ SDL_X11_SYM(int,XInstallColormap,(Display* a,Colormap b),(a,b),return)
+ SDL_X11_SYM(KeyCode,XKeysymToKeycode,(Display* a,KeySym b),(a,b),return)
+ SDL_X11_SYM(Atom,XInternAtom,(Display* a,_Xconst char* b,Bool c),(a,b,c),return)
++SDL_X11_SYM(Status,XInternAtoms,(Display* a,char** b,int c,Bool d,Atom* e),(a,b,c,d,e),return)
+ SDL_X11_SYM(XPixmapFormatValues*,XListPixmapFormats,(Display* a,int* b),(a,b),return)
+ SDL_X11_SYM(int,XLookupString,(XKeyEvent* a,char* b,int c,KeySym* d,XComposeStatus* e),(a,b,c,d,e),return)
+ SDL_X11_SYM(int,XMapRaised,(Display* a,Window b),(a,b),return)

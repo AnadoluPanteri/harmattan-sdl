@@ -1,0 +1,18 @@
+libsdl1.2 (1.2.14-0maemo3) unstable; urgency=low
+
+  * Trying a tickless version of the SDL event and timer loops.
+
+ -- Javier S. Pedro <maemo@javispedro.com>  Sun, 17 Jul 2011 02:43:22 +0200
+
+libsdl1.2 (1.2.14-0maemo2) unstable; urgency=low
+
+  * Fixing crash on real device.
+  * For now, do not build GLES extensions.
+
+ -- Javier S. Pedro <maemo@javispedro.com>  Tue, 12 Jul 2011 02:15:17 +0200
+
+libsdl1.2 (1.2.14-0maemo1) unstable; urgency=low
+
+  * Preeliminary packaging.
+
+ -- Javier S. Pedro <maemo@javispedro.com>  Sat, 09 Jul 2011 20:40:56 +0200

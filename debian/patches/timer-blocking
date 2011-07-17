@@ -1,0 +1,220 @@
+Index: repo/src/timer/SDL_timer.c
+===================================================================
+--- repo.orig/src/timer/SDL_timer.c
++++ repo/src/timer/SDL_timer.c
+@@ -38,6 +38,14 @@ SDL_TimerCallback SDL_alarm_callback;
+ /* Data used for a thread-based timer */
+ static int SDL_timer_threaded = 0;
+ 
++#if defined(HAVE_UNISTD_H) && defined(HAVE_FCNTL_H)
++#define SDL_EVENT_WAKEUP_PIPE 1
++#include <unistd.h> /* for pipe(),select() */
++#include <fcntl.h>  /* for fcntl() */
++
++static int wakeup_pipe[2] = { -1, -1 };
++#endif
++
+ struct _SDL_TimerID {
+ 	Uint32 interval;
+ 	SDL_NewTimerCallback cb;
+@@ -48,7 +56,17 @@ struct _SDL_TimerID {
+ 
+ static SDL_TimerID SDL_timers = NULL;
+ static SDL_mutex *SDL_timer_mutex;
+-static volatile SDL_bool list_changed = SDL_FALSE;
++static int list_changes = 0;
++
++static void SDL_TimerChanged(void)
++{
++	list_changes++;
++#ifdef SDL_EVENT_WAKEUP_PIPE
++	if (wakeup_pipe[1] != -1) {
++		write(wakeup_pipe[1], "T", 1);
++	}
++#endif
++}
+ 
+ /* Set whether or not the timer should use a thread.
+    This should not be called while the timer subsystem is running.
+@@ -75,6 +93,17 @@ int SDL_TimerInit(void)
+ 	if ( SDL_timer_started ) {
+ 		SDL_TimerQuit();
+ 	}
++#ifdef SDL_EVENT_WAKEUP_PIPE
++	retval = pipe(wakeup_pipe);
++	if (retval != 0) {
++		return -1;
++	}
++	retval += fcntl(wakeup_pipe[0], F_SETFD, FD_CLOEXEC);
++	retval += fcntl(wakeup_pipe[1], F_SETFD, FD_CLOEXEC);
++	if (retval != 0) {
++		return -1;
++	}
++#endif
+ 	if ( ! SDL_timer_threaded ) {
+ 		retval = SDL_SYS_TimerInit();
+ 	}
+@@ -90,6 +119,12 @@ int SDL_TimerInit(void)
+ void SDL_TimerQuit(void)
+ {
+ 	SDL_SetTimer(0, NULL);
++#ifdef SDL_EVENT_WAKEUP_PIPE
++	if (wakeup_pipe[1] != -1) {
++		/* Ensure a possibly blocked timer thread is awaken. */
++		write(wakeup_pipe[1], "Q", 1);
++	}
++#endif
+ 	if ( SDL_timer_threaded < 2 ) {
+ 		SDL_SYS_TimerQuit();
+ 	}
+@@ -97,18 +132,24 @@ void SDL_TimerQuit(void)
+ 		SDL_DestroyMutex(SDL_timer_mutex);
+ 		SDL_timer_mutex = NULL;
+ 	}
++#ifdef SDL_EVENT_WAKEUP_PIPE
++	close(wakeup_pipe[0]);
++	close(wakeup_pipe[1]);
++	wakeup_pipe[0] = -1;
++	wakeup_pipe[1] = -1;
++#endif
+ 	SDL_timer_started = 0;
+ 	SDL_timer_threaded = 0;
+ }
+ 
+-void SDL_ThreadedTimerCheck(void)
++Uint32 SDL_ThreadedTimerCheck(void)
+ {
+-	Uint32 now, ms;
++	Uint32 now, ms, wait;
+ 	SDL_TimerID t, prev, next;
+ 	SDL_bool removed;
+ 
+ 	SDL_mutexP(SDL_timer_mutex);
+-	list_changed = SDL_FALSE;
++	list_changes = 0;
+ 	now = SDL_GetTicks();
+ 	for ( prev = NULL, t = SDL_timers; t; t = next ) {
+ 		removed = SDL_FALSE;
+@@ -130,7 +171,7 @@ void SDL_ThreadedTimerCheck(void)
+ 			SDL_mutexV(SDL_timer_mutex);
+ 			ms = timer.cb(timer.interval, timer.param);
+ 			SDL_mutexP(SDL_timer_mutex);
+-			if ( list_changed ) {
++			if ( list_changes ) {
+ 				/* Abort, list of timers modified */
+ 				/* FIXME: what if ms was changed? */
+ 				break;
+@@ -159,7 +200,56 @@ void SDL_ThreadedTimerCheck(void)
+ 			prev = t;
+ 		}
+ 	}
++	wait = 0xFFFFFFFFUL;
++	for ( t = SDL_timers; t; t = t->next ) {
++		int dist = (int)t->interval - (int)(now - t->last_alarm);
++		if (dist < 0) {
++			wait = 0;
++		} else if (dist < wait) {
++			wait = dist;
++		}
++	}
+ 	SDL_mutexV(SDL_timer_mutex);
++	return wait;
++}
++
++SDL_bool SDL_ThreadedTimerIteration(void)
++{
++#ifdef SDL_EVENT_WAKEUP_PIPE
++	while (list_changes > 0 && wakeup_pipe[0] != -1) {
++			/* Read one character from the pipe. */
++		char c;
++		read(wakeup_pipe[0], &c, 1);
++		list_changes--;
++		if (c == 'Q') {
++			return SDL_FALSE;
++		}
++	}
++#endif
++
++	Uint32 wait = SDL_ThreadedTimerCheck();
++
++#ifdef SDL_EVENT_WAKEUP_PIPE
++	struct timeval tv;
++	int nfds;
++	fd_set rfds;
++
++	FD_ZERO(&rfds);
++	FD_SET(wakeup_pipe[0], &rfds);
++	nfds = wakeup_pipe[0] + 1;
++
++	if (wait == 0xFFFFFFFFUL) {
++		/* Wait forever. */
++	} else {
++		tv.tv_sec = wait / 1000;
++		tv.tv_usec = (wait % 1000) * 1000;
++	}
++
++	select(nfds, &rfds, NULL, NULL, wait == 0xFFFFFFFFUL ? NULL : &tv);
++#else
++	SDL_Delay(1);
++#endif
++	return SDL_TRUE;
+ }
+ 
+ static SDL_TimerID SDL_AddTimerInternal(Uint32 interval, SDL_NewTimerCallback callback, void *param)
+@@ -174,7 +264,7 @@ static SDL_TimerID SDL_AddTimerInternal(
+ 		t->next = SDL_timers;
+ 		SDL_timers = t;
+ 		++SDL_timer_running;
+-		list_changed = SDL_TRUE;
++		SDL_TimerChanged();
+ 	}
+ #ifdef DEBUG_TIMERS
+ 	printf("SDL_AddTimer(%d) = %08x num_timers = %d\n", interval, (Uint32)t, SDL_timer_running);
+@@ -221,7 +311,7 @@ SDL_bool SDL_RemoveTimer(SDL_TimerID id)
+ 			SDL_free(t);
+ 			--SDL_timer_running;
+ 			removed = SDL_TRUE;
+-			list_changed = SDL_TRUE;
++			SDL_TimerChanged();
+ 			break;
+ 		}
+ 	}
+@@ -259,7 +349,7 @@ int SDL_SetTimer(Uint32 ms, SDL_TimerCal
+ 				SDL_free(freeme);
+ 			}
+ 			SDL_timer_running = 0;
+-			list_changed = SDL_TRUE;
++			SDL_TimerChanged();
+ 		} else {
+ 			SDL_SYS_StopTimer();
+ 			SDL_timer_running = 0;
+Index: repo/src/timer/SDL_timer_c.h
+===================================================================
+--- repo.orig/src/timer/SDL_timer_c.h
++++ repo/src/timer/SDL_timer_c.h
+@@ -43,4 +43,6 @@ extern int SDL_TimerInit(void);
+ extern void SDL_TimerQuit(void);
+ 
+ /* This function is called from the SDL event thread if it is available */
+-extern void SDL_ThreadedTimerCheck(void);
++extern Uint32 SDL_ThreadedTimerCheck(void);
++extern SDL_bool SDL_ThreadedTimerIteration(void);
++
+Index: repo/src/timer/unix/SDL_systimer.c
+===================================================================
+--- repo.orig/src/timer/unix/SDL_systimer.c
++++ repo/src/timer/unix/SDL_systimer.c
+@@ -196,12 +196,7 @@ static SDL_Thread *timer = NULL;
+ 
+ static int RunTimer(void *unused)
+ {
+-	while ( timer_alive ) {
+-		if ( SDL_timer_running ) {
+-			SDL_ThreadedTimerCheck();
+-		}
+-		SDL_Delay(1);
+-	}
++	while ( timer_alive && SDL_ThreadedTimerIteration() );
+ 	return(0);
+ }
+ 
