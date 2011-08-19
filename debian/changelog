@@ -1,3 +1,9 @@
+libsdl1.2 (1.2.14-0maemo4) unstable; urgency=low
+
+  * Updated maintainer in control file
+
+ -- Gerard Bosch Creus <gerard.bosch@nokia.com>  Fri, 19 Aug 2011 12:05:25 +0300
+
 libsdl1.2 (1.2.14-0maemo3) unstable; urgency=low
 
   * Trying a tickless version of the SDL event and timer loops.
