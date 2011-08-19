@@ -1,3 +1,9 @@
+libsdl1.2 (1.2.14-0maemo5) unstable; urgency=low
+
+  * Disabled ALSA backend
+
+ -- Gerard Bosch Creus <gerard.bosch@nokia.com>  Fri, 19 Aug 2011 18:00:56 +0300
+
 libsdl1.2 (1.2.14-0maemo4) unstable; urgency=low
 
   * Updated maintainer in control file

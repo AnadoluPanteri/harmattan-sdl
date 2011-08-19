@@ -6,7 +6,7 @@ XSBC-Original-Maintainer: Javier S. Pedro <maemo@javispedro.com>
 Standards-Version: 3.7.3
 Build-Depends: dpkg (>= 1.13.2), debhelper (>= 4.0), quilt, libx11-dev,
  libxext-dev, libxt-dev, libxv-dev, libxi-dev, x11proto-core-dev,
- libasound2-dev, libpulse-dev, opengles-sgx-img-common-dev [armel],
+ libpulse-dev, opengles-sgx-img-common-dev [armel],
  autoconf
 
 Package: libsdl1.2

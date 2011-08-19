@@ -26,7 +26,7 @@ export DEB_BUILD_GNU_TYPE
 confflags = --prefix=/usr --disable-rpath \
 	     --enable-arts-shared=no --enable-alsa-shared=no \
 	     --enable-esd-shared=no --enable-pulseaudio-shared=no \
-	     --enable-video-x11 -enable-alsa --enable-pulseaudio \
+	     --enable-video-x11 --enable-pulseaudio \
 	     --disable-oss --disable-esd --disable-video-fbcon
 
 ifeq ($(DEB_BUILD_GNU_TYPE), $(DEB_HOST_GNU_TYPE))
