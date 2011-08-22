@@ -23,7 +23,7 @@ DEB_BUILD_ARCH_CPU	?= $(shell dpkg-architecture -qDEB_BUILD_ARCH_CPU)
 export DEB_HOST_GNU_TYPE
 export DEB_BUILD_GNU_TYPE
 
-confflags = --prefix=/usr --disable-rpath \
+confflags = --prefix=/usr --disable-rpath --enable-x11-shared=no \
 	     --enable-arts-shared=no --enable-alsa-shared=no \
 	     --enable-esd-shared=no --enable-pulseaudio-shared=no \
 	     --enable-video-x11 --enable-pulseaudio \
