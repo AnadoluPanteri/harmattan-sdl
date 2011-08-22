@@ -2,7 +2,7 @@ Index: repo/src/video/x11/SDL_x11video.c
 ===================================================================
 --- repo.orig/src/video/x11/SDL_x11video.c
 +++ repo/src/video/x11/SDL_x11video.c
-@@ -342,97 +342,79 @@ static void create_aux_windows(_THIS)
+@@ -342,97 +342,82 @@ static void create_aux_windows(_THIS)
      char classname[1024];
      XSetWindowAttributes xattr;
      XWMHints *hints;
@@ -117,7 +117,8 @@ Index: repo/src/video/x11/SDL_x11video.c
 +		get_classname(classname, sizeof(classname));
 +		classhints->res_name = classname;
 +		classhints->res_class = classname;
-+	}
+ 	}
+-    }
 +
 +	XSetWMProperties(SDL_Display, WMwindow, NULL, NULL, NULL, 0, NULL, hints, classhints);
 +
@@ -126,20 +127,22 @@ Index: repo/src/video/x11/SDL_x11video.c
 +	}
 +	if (classhints) {
 +		XFree(classhints);
- 	}
--    }
++	}
 +
 +	/* Set the X11 window pid */
 +	unsigned long pid = getpid();
 +	XChangeProperty(SDL_Display, WMwindow, atom(_NET_WM_PID), XA_CARDINAL, 32,
 +		PropModeReplace, (unsigned char *)&pid, 1);
 +
-+	/* Allow the window to be deleted by the window manager */
-+	XSetWMProtocols(SDL_Display, WMwindow, &atom(WM_DELETE_WINDOW), 1);
++	/* Allow the window to be deleted or pinged by the window manager */
++	Atom protocols[2];
++	protocols[0] = atom(WM_DELETE_WINDOW);
++	protocols[1] = atom(_NET_WM_PING);
++	XSetWMProtocols(SDL_Display, WMwindow, protocols, 2);
  
  	/* Setup the communication with the IM server */
  	/* create_aux_windows may be called several times against the same
-@@ -568,9 +550,6 @@ static void create_aux_windows(_THIS)
+@@ -568,9 +553,6 @@ static void create_aux_windows(_THIS)
  		}
  	}
  	#endif
@@ -149,7 +152,7 @@ Index: repo/src/video/x11/SDL_x11video.c
  }
  
  static int X11_VideoInit(_THIS, SDL_PixelFormat *vformat)
-@@ -800,20 +779,24 @@ static void X11_SetSizeHints(_THIS, int
+@@ -800,20 +782,24 @@ static void X11_SetSizeHints(_THIS, int
  		if (!(flags & SDL_RESIZABLE)) {
  			hints->min_width = hints->max_width = w;
  			hints->min_height = hints->max_height = h;
@@ -182,7 +185,7 @@ Index: repo/src/video/x11/SDL_x11video.c
  		}
  		XSetWMNormalHints(SDL_Display, WMwindow, hints);
  		XFree(hints);
-@@ -918,7 +901,6 @@ static int X11_CreateWindow(_THIS, SDL_S
+@@ -918,7 +904,6 @@ static int X11_CreateWindow(_THIS, SDL_S
  	/* If a window is already present, destroy it and start fresh */
  	if ( SDL_Window ) {
  		X11_DestroyWindow(this, screen);
@@ -190,7 +193,7 @@ Index: repo/src/video/x11/SDL_x11video.c
  	}
  
  	/* See if we have been given a window id */
-@@ -1032,18 +1014,9 @@ static int X11_CreateWindow(_THIS, SDL_S
+@@ -1032,18 +1017,9 @@ static int X11_CreateWindow(_THIS, SDL_S
  	if ( vis_change )
  	    create_aux_windows(this);
  
@@ -210,7 +213,7 @@ Index: repo/src/video/x11/SDL_x11video.c
  		window_w = w;
  		window_h = h;
  		XResizeWindow(SDL_Display, WMwindow, w, h);
-@@ -1106,7 +1079,6 @@ static int X11_CreateWindow(_THIS, SDL_S
+@@ -1106,7 +1082,6 @@ static int X11_CreateWindow(_THIS, SDL_S
  	if ( ! (flags & (SDL_OPENGL|SDL_OPENGLES)) ) {
  		XSetWindowColormap(SDL_Display, SDL_Window, SDL_XColorMap);
  		if( !SDL_windowid ) {
@@ -218,7 +221,7 @@ Index: repo/src/video/x11/SDL_x11video.c
  		    XSetWindowColormap(SDL_Display, WMwindow, SDL_XColorMap);
  		}
  	}
-@@ -1129,15 +1101,16 @@ static int X11_CreateWindow(_THIS, SDL_S
+@@ -1129,15 +1104,16 @@ static int X11_CreateWindow(_THIS, SDL_S
  
  	/* Map them both and go fullscreen, if requested */
  	if ( ! SDL_windowid ) {
@@ -238,7 +241,7 @@ Index: repo/src/video/x11/SDL_x11video.c
  	}
  	
  	return(0);
-@@ -1282,10 +1255,12 @@ static int X11_ToggleFullScreen(_THIS, i
+@@ -1282,10 +1258,12 @@ static int X11_ToggleFullScreen(_THIS, i
  	}
  	if ( on ) {
  		this->screen->flags |= SDL_FULLSCREEN;
@@ -308,7 +311,15 @@ Index: repo/src/video/x11/SDL_x11sym.h
 ===================================================================
 --- repo.orig/src/video/x11/SDL_x11sym.h
 +++ repo/src/video/x11/SDL_x11sym.h
-@@ -96,6 +96,7 @@ SDL_X11_SYM(int,XSetTransientForHint,(Di
+@@ -58,6 +58,7 @@ SDL_X11_SYM(XModifierKeymap*,XGetModifie
+ SDL_X11_SYM(int,XGetPointerControl,(Display* a,int* b,int* c,int* d),(a,b,c,d),return)
+ SDL_X11_SYM(XVisualInfo*,XGetVisualInfo,(Display* a,long b,XVisualInfo* c,int* d),(a,b,c,d),return)
+ SDL_X11_SYM(XWMHints*,XGetWMHints,(Display* a,Window b),(a,b),return)
++SDL_X11_SYM(int,XGetWindowProperty,(Display* a,Window b,Atom c,long d,long e,Bool f,Atom g,Atom*h,int*i,unsigned long*j,unsigned long*k,unsigned char**l),(a,b,c,d,e,f,g,h,i,j,k,l),return)
+ SDL_X11_SYM(Status,XGetWindowAttributes,(Display* a,Window b,XWindowAttributes* c),(a,b,c),return)
+ SDL_X11_SYM(int,XGrabKeyboard,(Display* a,Window b,Bool c,int d,int e,Time f),(a,b,c,d,e,f),return)
+ SDL_X11_SYM(int,XGrabPointer,(Display* a,Window b,Bool c,unsigned int d,int e,int f,Window g,Cursor h,Time i),(a,b,c,d,e,f,g,h,i),return)
+@@ -96,6 +97,7 @@ SDL_X11_SYM(int,XSetTransientForHint,(Di
  SDL_X11_SYM(int,XSetWMHints,(Display* a,Window b,XWMHints* c),(a,b,c),return)
  SDL_X11_SYM(void,XSetTextProperty,(Display* a,Window b,XTextProperty* c,Atom d),(a,b,c,d),)
  SDL_X11_SYM(void,XSetWMNormalHints,(Display* a,Window b,XSizeHints* c),(a,b,c),)
@@ -481,7 +492,83 @@ Index: repo/src/video/x11/SDL_x11events.c
  	    }
  	    break;
  
-@@ -939,38 +933,6 @@ void X11_PumpEvents(_THIS)
+@@ -844,6 +838,59 @@ printf("ConfigureNotify! (resize: %dx%d)
+ 		}
+ 		break;
+ 
++	    /* Has one of our window properties being changed? */
++	    case PropertyNotify:
++#ifdef DEBUG_XEVENTS
++printf("PropertyNotify atom = %d)\n", xevent.xproperty.atom);
++#endif
++		if ( xevent.xproperty.window == WMwindow &&
++			 xevent.xproperty.state == PropertyNewValue &&
++			 xevent.xproperty.atom == atom(WM_STATE)) {
++			Atom type;
++			int format;
++			unsigned long nitems, after;
++			unsigned char * data;
++			int e = XGetWindowProperty(SDL_Display, WMwindow, atom(WM_STATE),
++				0, 1, False, atom(WM_STATE),
++				&type, &format, &nitems, &after, &data);
++			if ( e == Success && type == atom(WM_STATE) &&
++				 format == 32 && nitems >= 1 ) {
++				unsigned long state = *(unsigned long*)data;
++				switch (state) {
++				case NormalState:
++					/* If we're not active, make ourselves active */
++					if ( !(SDL_GetAppState() & SDL_APPACTIVE) ) {
++						/* Send an internal activate event */
++						posted = SDL_PrivateAppActive(1, SDL_APPACTIVE);
++
++						/* Now that we're active, swap the gamma back */
++						X11_SwapVidModeGamma(this);
++					}
++				break;
++				case IconicState:
++					/* If we're active, make ourselves inactive */
++					if ( SDL_GetAppState() & SDL_APPACTIVE ) {
++						/* Swap out the gamma before we go inactive */
++						X11_SwapVidModeGamma(this);
++
++						/* Send an internal deactivate event */
++						posted = SDL_PrivateAppActive(0, SDL_APPACTIVE);
++					}
++				break;
++				}
++			}
++			if ( e == Success ) XFree(data);
++		} else
++		if ( SDL_ProcessEvents[SDL_SYSWMEVENT] == SDL_ENABLE ) {
++			SDL_SysWMmsg wmmsg;
++
++			SDL_VERSION(&wmmsg.version);
++			wmmsg.subsystem = SDL_SYSWM_X11;
++			wmmsg.event.xevent = xevent;
++			posted = SDL_PrivateSysWMEvent(&wmmsg);
++		}
++	    break;
++
+ 	    /* Have we been requested to quit (or another client message?) */
+ 	    case ClientMessage: {
+ 		if ( (xevent.xclient.format == 32) &&
+@@ -851,6 +898,15 @@ printf("ConfigureNotify! (resize: %dx%d)
+ 		{
+ 			posted = SDL_PrivateQuit();
+ 		} else
++		if ( (xevent.xclient.format == 32) &&
++		     (xevent.xclient.data.l[0] == atom(_NET_WM_PING)) )
++		{
++			/* Window manager wants to know if we are still alive. */
++			xevent.xclient.window = DefaultRootWindow(SDL_Display);
++			XSendEvent(SDL_Display, xevent.xclient.window, False,
++				SubstructureRedirectMask | SubstructureNotifyMask, &xevent);
++			posted = 1;
++		} else
+ 		if ( SDL_ProcessEvents[SDL_SYSWMEVENT] == SDL_ENABLE ) {
+ 			SDL_SysWMmsg wmmsg;
+ 
+@@ -939,38 +995,6 @@ void X11_PumpEvents(_THIS)
  		X11_DispatchEvent(this);
  		++pending;
  	}

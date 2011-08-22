@@ -88,7 +88,7 @@ Index: repo/src/video/x11/SDL_x11sym.h
 ===================================================================
 --- repo.orig/src/video/x11/SDL_x11sym.h
 +++ repo/src/video/x11/SDL_x11sym.h
-@@ -193,5 +193,17 @@ SDL_X11_SYM(Status,XRRSetScreenConfig,(D
+@@ -194,5 +194,17 @@ SDL_X11_SYM(Status,XRRSetScreenConfig,(D
  SDL_X11_SYM(void,XRRFreeScreenConfigInfo,(XRRScreenConfiguration *config),(config),)
  #endif
  
@@ -163,7 +163,7 @@ Index: repo/src/video/x11/SDL_x11video.c
 ===================================================================
 --- repo.orig/src/video/x11/SDL_x11video.c
 +++ repo/src/video/x11/SDL_x11video.c
-@@ -625,6 +625,41 @@ static int X11_VideoInit(_THIS, SDL_Pixe
+@@ -628,6 +628,41 @@ static int X11_VideoInit(_THIS, SDL_Pixe
  	}
  #endif /* NO_SHARED_MEMORY */
  
@@ -205,7 +205,7 @@ Index: repo/src/video/x11/SDL_x11video.c
  	/* Get the available video modes */
  	if(X11_GetVideoModes(this) < 0) {
  		XCloseDisplay(GFX_Display);
-@@ -1045,10 +1080,31 @@ static int X11_CreateWindow(_THIS, SDL_S
+@@ -1048,10 +1083,31 @@ static int X11_CreateWindow(_THIS, SDL_S
  		                           	| CWColormap, &swa);
  		}
  		/* Only manage our input if we own the window */
@@ -424,7 +424,7 @@ Index: repo/src/video/x11/SDL_x11events.c
  static int X11_DispatchEvent(_THIS)
  {
  	int posted;
-@@ -867,6 +1032,17 @@ printf("Expose (count = %d)\n", xevent.x
+@@ -929,6 +1094,17 @@ printf("Expose (count = %d)\n", xevent.x
  	    }
  	    break;
  
@@ -446,7 +446,7 @@ Index: repo/src/video/x11/SDL_x11atoms.h
 ===================================================================
 --- repo.orig/src/video/x11/SDL_x11atoms.h
 +++ repo/src/video/x11/SDL_x11atoms.h
-@@ -27,3 +27,9 @@ SDL_X11_ATOM(_NET_WM_PID, "_NET_WM_PID")
+@@ -29,3 +29,9 @@ SDL_X11_ATOM(_NET_WM_PING, "_NET_WM_PING
  SDL_X11_ATOM(_NET_WM_STATE, "_NET_WM_STATE")
  SDL_X11_ATOM(_NET_WM_STATE_FULLSCREEN, "_NET_WM_STATE_FULLSCREEN")
  

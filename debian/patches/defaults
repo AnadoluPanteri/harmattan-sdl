@@ -1,8 +1,8 @@
-Index: SDL-1.2.14/src/audio/SDL_audio.c
+Index: repo/src/audio/SDL_audio.c
 ===================================================================
---- SDL-1.2.14.orig/src/audio/SDL_audio.c
-+++ SDL-1.2.14/src/audio/SDL_audio.c
-@@ -422,7 +422,7 @@ int SDL_OpenAudio(SDL_AudioSpec *desired
+--- repo.orig/src/audio/SDL_audio.c
++++ repo/src/audio/SDL_audio.c
+@@ -430,7 +430,7 @@ int SDL_OpenAudio(SDL_AudioSpec *desired
  	}
  	if ( desired->freq == 0 ) {
  		/* Pick some default audio frequency */
@@ -11,10 +11,10 @@ Index: SDL-1.2.14/src/audio/SDL_audio.c
  	}
  	if ( desired->format == 0 ) {
  		env = SDL_getenv("SDL_AUDIO_FORMAT");
-Index: SDL-1.2.14/src/video/SDL_video.c
+Index: repo/src/video/SDL_video.c
 ===================================================================
---- SDL-1.2.14.orig/src/video/SDL_video.c
-+++ SDL-1.2.14/src/video/SDL_video.c
+--- repo.orig/src/video/SDL_video.c
++++ repo/src/video/SDL_video.c
 @@ -223,12 +223,12 @@ int SDL_VideoInit (const char *driver_na
  	/* Set some very sane GL defaults */
  	video->gl_config.driver_loaded = 0;

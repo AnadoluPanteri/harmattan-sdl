@@ -1,0 +1,974 @@
+Index: repo/src/video/x11/SDL_x11video.h
+===================================================================
+--- repo.orig/src/video/x11/SDL_x11video.h
++++ repo/src/video/x11/SDL_x11video.h
+@@ -49,6 +49,10 @@
+ #if SDL_VIDEO_DRIVER_X11_XINPUT2
+ #include <X11/extensions/XInput2.h>
+ #endif
++#if SDL_VIDEO_DRIVER_X11_DRI2
++#include "../Xext/extensions/DRI2.h"
++#define DRI2_BUFFER_CACHE_SIZE 5
++#endif
+ 
+ #include "SDL_x11dyn.h"
+ 
+@@ -148,6 +152,18 @@ struct SDL_PrivateVideoData {
+ #if SDL_VIDEO_DRIVER_X11_XME /* XiG XME fullscreen */
+     XiGMiscResolutionInfo saved_res;
+ #endif
++#if SDL_VIDEO_DRIVER_X11_DRI2
++    int dri2_event_base, dri2_error_base;
++    struct {
++        int valid;
++        DRI2Buffer buf;
++        void *mem;
++        void *dev_mem;
++    } dri2_cache[DRI2_BUFFER_CACHE_SIZE];
++    int dri2_buf; /* The current framebuffer, as an index to dri2_cache. */
++    int dri2_accel;
++    Uint32 dri2_last_swap;
++#endif
+ 
+     int use_xinerama;
+     int use_xrandr;
+@@ -208,6 +224,12 @@ struct SDL_PrivateVideoData {
+ #define xi_opcode			(this->hidden->xi_opcode)
+ #define xi_master			(this->hidden->xi_master)
+ #define have_touch			(this->hidden->have_touch)
++#define dri2_event_base		(this->hidden->dri2_event_base)
++#define dri2_error_base		(this->hidden->dri2_error_base)
++#define dri2_cache		(this->hidden->dri2_cache)
++#define dri2_buf		(this->hidden->dri2_buf)
++#define dri2_accel		(this->hidden->dri2_accel)
++#define dri2_last_swap		(this->hidden->dri2_last_swap)
+ #define use_xinerama		(this->hidden->use_xinerama)
+ #define use_vidmode		(this->hidden->use_vidmode)
+ #define use_xrandr		(this->hidden->use_xrandr)
+Index: repo/configure.in
+===================================================================
+--- repo.orig/configure.in
++++ repo/configure.in
+@@ -1130,6 +1130,25 @@ AC_HELP_STRING([--enable-video-x11-xinpu
+             if test x$definitely_enable_video_x11_xinput2 = xyes; then
+                 AC_DEFINE(SDL_VIDEO_DRIVER_X11_XINPUT2)
+             fi
++            AC_ARG_ENABLE(video-x11-dri2-pvr2d,
++AC_HELP_STRING([--enable-video-x11-dri2-pvr2d], [enable X11 DRI2/PVR2D extension for hardware surfaces [[default=yes]]]),
++                            , enable_video_x11_dri2_pvr2d=yes)
++            if test x$enable_video_x11_dri2_pvr2d = xyes; then
++                definitely_enable_video_x11_dri2_pvr2d=no
++                AC_CHECK_HEADER(pvr2d.h,
++                                have_pvr2d_h_hdr=yes,
++                                have_pvr2d_h_hdr=no,
++                                )
++                if test x$have_pvr2d_h_hdr = xyes; then
++                    definitely_enable_video_x11_dri2_pvr2d=yes
++                fi
++            fi
++            if test x$definitely_enable_video_x11_dri2_pvr2d = xyes; then
++                AC_DEFINE(SDL_VIDEO_DRIVER_X11_DRI2)
++				AC_DEFINE(SDL_VIDEO_DRIVER_X11_DRI2_PVR2D)
++                SOURCES="$SOURCES $srcdir/src/video/Xext/DRI2/*.c"
++                EXTRA_LDFLAGS="$EXTRA_LDFLAGS $X_LIBS -lXfixes -lpvr2d"
++            fi
+         fi
+     fi
+ }
+Index: repo/src/video/x11/SDL_x11image.c
+===================================================================
+--- repo.orig/src/video/x11/SDL_x11image.c
++++ repo/src/video/x11/SDL_x11image.c
+@@ -26,8 +26,14 @@
+ 
+ #include "SDL_endian.h"
+ #include "../../events/SDL_events_c.h"
++#include "../SDL_pixels_c.h"
+ #include "SDL_x11image_c.h"
+ 
++#if SDL_VIDEO_DRIVER_X11_DRI2_PVR2D
++#include <sys/shm.h>
++#include "SDL_x11pvr2d_c.h"
++#endif
++
+ #ifndef NO_SHARED_MEMORY
+ 
+ /* Shared memory error handler routine */
+@@ -77,6 +83,174 @@ static void try_mitshm(_THIS, SDL_Surfac
+ }
+ #endif /* ! NO_SHARED_MEMORY */
+ 
++#if SDL_VIDEO_DRIVER_X11_DRI2
++/* Keep this to a single one */
++static unsigned int dri2_attachments[1] = {
++	DRI2BufferBackLeft
++};
++
++static void X11_DRI2_RemoveBuffer(_THIS, int i)
++{
++	if (dri2_cache[i].valid) {
++#if SDL_VIDEO_DRIVER_X11_DRI2_PVR2D
++		if (dri2_cache[i].buf.flags & 1) {
++			X11_PVR2D_UnmapBuffer(this, dri2_cache[i].dev_mem);
++		} else {
++			shmdt(dri2_cache[i].mem);
++		}
++#endif
++		dri2_cache[i].mem = NULL;
++		dri2_cache[i].valid = 0;
++	}
++}
++
++static int X11_DRI2_FindEmpty(_THIS)
++{
++	int i;
++	for (i = 0; i < DRI2_BUFFER_CACHE_SIZE; i++) {
++		if (!dri2_cache[i].valid) {
++			return i;
++		}
++	}
++	/* If we are here, cache was full. Eject oldest line from it. */
++	X11_DRI2_RemoveBuffer(this, 0);
++	memmove(&dri2_cache[0], &dri2_cache[1], DRI2_BUFFER_CACHE_SIZE * sizeof(dri2_cache[0]));
++	dri2_cache[DRI2_BUFFER_CACHE_SIZE - 1].valid = 0;
++	return DRI2_BUFFER_CACHE_SIZE - 1;
++}
++
++static int X11_DRI2_FindInCache(_THIS, const DRI2Buffer *buffer)
++{
++	int i;
++	for (i = 0; i < DRI2_BUFFER_CACHE_SIZE; i++) {
++		if (dri2_cache[i].valid &&
++		      memcmp(&dri2_cache[i].buf, buffer, sizeof(*buffer)) == 0) {
++			return i;
++		}
++	}
++	return -1;
++}
++
++static int X11_DRI2_CacheBuffer(_THIS, const DRI2Buffer *buffer)
++{
++	int i = X11_DRI2_FindInCache(this, buffer);
++	if (i != -1) {
++		/* Found in cache, so this buffer is already mmaped. */
++		return i;
++	}
++
++	i = X11_DRI2_FindEmpty(this);
++	dri2_cache[i].buf = *buffer;
++#if SDL_VIDEO_DRIVER_X11_DRI2_PVR2D
++	if (dri2_cache[i].buf.flags & 1) {
++		dri2_cache[i].mem = X11_PVR2D_MapBuffer(this, &dri2_cache[i].buf, &dri2_cache[i].dev_mem);
++	} else {
++		dri2_cache[i].mem = shmat(dri2_cache[i].buf.name, NULL, 0);
++		if (dri2_cache[i].mem == (void*) -1) {
++			dri2_cache[i].mem = NULL;
++		}
++	}
++#endif
++	dri2_cache[i].valid = dri2_cache[i].mem != NULL;
++	if (!dri2_cache[i].valid) {
++		return -1;
++	}
++	return i;
++}
++
++static void X11_DRI2_InvalidateCache(_THIS)
++{
++	int i;
++	for (i = 0; i < DRI2_BUFFER_CACHE_SIZE; i++) {
++		X11_DRI2_RemoveBuffer(this, i);
++	}
++}
++
++static int X11_DRI2_PrepareVideoSurface(_THIS)
++{
++	if (dri2_buf == -1 || !dri2_cache[dri2_buf].valid) {
++		/* Bad. Our current mapping was invalidated. Roundtrip to get a new one. */
++		int w, h, in_count = 1, out_count = 0;
++		DRI2Buffer *buffers = DRI2GetBuffers(SDL_Display, SDL_Window, &w, &h,
++			dri2_attachments, in_count, &out_count);
++		if (out_count < 1 || buffers == NULL) return -1;
++
++		dri2_buf = X11_DRI2_CacheBuffer(this, &buffers[0]);
++		if (dri2_buf == -1) {
++			return -1;
++		}
++
++#if SDL_VIDEO_DRIVER_X11_DRI2_PVR2D
++		int new_accel = dri2_cache[dri2_buf].buf.flags & 1;
++		if (new_accel != dri2_accel) {
++			/* Bad. Fullscreen status just changed.
++			   Maybe we can't use PVR2D any longer! */
++			SDL_FormatChanged(SDL_VideoSurface);
++			dri2_accel = new_accel;
++		}
++		if (dri2_accel) {
++			X11_PVR2D_SetupImage(this, SDL_VideoSurface);
++		}
++#endif
++	}
++
++	return 0;
++}
++
++static int X11_DRI2_LockVideoSurface(_THIS, SDL_Surface *surface)
++{
++	int r = X11_DRI2_PrepareVideoSurface(this);
++	if (r != 0) return r;
++
++#if SDL_VIDEO_DRIVER_X11_DRI2_PVR2D
++	if (dri2_accel) {
++		X11_PVR2D_WaitBlits(this, surface);
++	}
++#endif
++
++	surface->pixels = dri2_cache[dri2_buf].mem;
++	surface->pitch = dri2_cache[dri2_buf].buf.pitch;
++
++	return 0;
++}
++
++static void X11_DRI2_UnlockVideoSurface(_THIS, SDL_Surface *surface)
++{
++	surface->pixels = NULL;
++}
++
++static void X11_DRI2_Update(_THIS, int numrects, SDL_Rect *rects)
++{
++	XRectangle *xrects = calloc(numrects, sizeof(XRectangle));
++	XserverRegion region;
++	int i;
++
++	for ( i=0; i<numrects; ++i ) {
++		xrects[i].x = rects[i].x;
++		xrects[i].y = rects[i].y;
++		xrects[i].width = rects[i].w;
++		xrects[i].height = rects[i].h;
++	}
++
++	region = XFixesCreateRegion(SDL_Display, xrects, numrects);
++	DRI2CopyRegion(SDL_Display, SDL_Window, region, DRI2BufferFrontLeft, DRI2BufferBackLeft);
++	XFixesDestroyRegion(SDL_Display, region);
++
++	dri2_buf = -1; /* Preemptively invalidate buffers. */
++
++#if SDL_VIDEO_DRIVER_X11_DRI2_PVR2D
++	/* Forcefully throttle to something sensible; otherwise, we DoS X11. */
++	Uint32 now = SDL_GetTicks();
++	const int delay = dri2_accel ? 16 : 30; /* 16ms delay per frame ~= 63fps */
++	while (now < dri2_last_swap + delay) {
++		SDL_Delay(dri2_last_swap + delay - now);
++		now = SDL_GetTicks();
++	}
++	dri2_last_swap = now;
++#endif
++}
++#endif
++
+ /* Various screen update functions available */
+ static void X11_NormalUpdate(_THIS, int numrects, SDL_Rect *rects);
+ static void X11_MITSHMUpdate(_THIS, int numrects, SDL_Rect *rects);
+@@ -131,6 +305,16 @@ error:
+ 
+ void X11_DestroyImage(_THIS, SDL_Surface *screen)
+ {
++#if SDL_VIDEO_DRIVER_X11_DRI2
++	if (screen->flags & SDL_HWSURFACE) {
++		DRI2DestroyDrawable(SDL_Display, SDL_Window);
++		X11_DRI2_InvalidateCache(this);
++#if SDL_VIDEO_DRIVER_X11_DRI2_PVR2D
++		X11_PVR2D_DestroyImage(this, screen);
++		X11_PVR2D_DecRef(this);
++#endif
++	}
++#endif
+ 	if ( SDL_Ximage ) {
+ 		XDestroyImage(SDL_Ximage);
+ #ifndef NO_SHARED_MEMORY
+@@ -187,6 +371,15 @@ int X11_ResizeImage(_THIS, SDL_Surface *
+ 	X11_DestroyImage(this, screen);
+         if ( flags & (SDL_OPENGL|SDL_OPENGLES) ) {  /* No image when using GL */
+         	retval = 0;
++#if SDL_VIDEO_DRIVER_X11_DRI2
++		} else if (flags & SDL_HWSURFACE) {
++			DRI2CreateDrawable(SDL_Display, SDL_Window);
++#if SDL_VIDEO_DRIVER_X11_DRI2_PVR2D
++			X11_PVR2D_AddRef(this);
++#endif
++			this->UpdateRects = X11_DRI2_Update;
++			dri2_buf = -1;
++#endif
+         } else {
+ 		retval = X11_SetupImage(this, screen);
+ 		/* We support asynchronous blitting on the display */
+@@ -207,15 +400,43 @@ int X11_ResizeImage(_THIS, SDL_Surface *
+ /* We don't actually allow hardware surfaces other than the main one */
+ int X11_AllocHWSurface(_THIS, SDL_Surface *surface)
+ {
++	if (!this->info.hw_available) {
++		SDL_SetError("Hardware surfaces are not available");
++		return -1;
++	}
++#if SDL_VIDEO_DRIVER_X11_DRI2_PVR2D
++	int ret = X11_PVR2D_AddRef(this);
++	if (ret != 0) {
++		return ret;
++	}
++	return X11_PVR2D_AllocSurface(this, surface);
++#endif
+ 	return(-1);
+ }
++
+ void X11_FreeHWSurface(_THIS, SDL_Surface *surface)
+ {
+-	return;
++#if SDL_VIDEO_DRIVER_X11_DRI2_PVR2D
++	X11_PVR2D_FreeSurface(this, surface);
++	X11_PVR2D_DecRef(this);
++#endif
+ }
+ 
+ int X11_LockHWSurface(_THIS, SDL_Surface *surface)
+ {
++#if SDL_VIDEO_DRIVER_X11_DRI2
++	if (surface->flags & SDL_HWSURFACE) {
++		if (surface == SDL_VideoSurface) {
++			return X11_DRI2_LockVideoSurface(this, surface);
++		} else {
++#if SDL_VIDEO_DRIVER_X11_DRI2_PVR2D
++			return X11_PVR2D_LockHWSurface(this, surface);
++#else
++			return -1;
++#endif
++		}
++	}
++#endif
+ 	if ( (surface == SDL_VideoSurface) && blit_queued ) {
+ 		XSync(GFX_Display, False);
+ 		blit_queued = 0;
+@@ -224,14 +445,114 @@ int X11_LockHWSurface(_THIS, SDL_Surface
+ }
+ void X11_UnlockHWSurface(_THIS, SDL_Surface *surface)
+ {
+-	return;
++#if SDL_VIDEO_DRIVER_X11_DRI2
++	if (surface->flags & SDL_HWSURFACE) {
++		if (surface == SDL_VideoSurface) {
++			X11_DRI2_UnlockVideoSurface(this, surface);
++		} else {
++#if SDL_VIDEO_DRIVER_X11_DRI2_PVR2D
++			X11_PVR2D_UnlockHWSurface(this, surface);
++#endif
++		}
++	}
++#endif
+ }
+ 
+ int X11_FlipHWSurface(_THIS, SDL_Surface *surface)
+ {
++#if SDL_VIDEO_DRIVER_X11_DRI2
++	CARD64 unused;
++	DRI2SwapBuffers(SDL_Display, SDL_Window, 0, 0, 0, &unused);
++	dri2_buf = -1; /* Preemptively invalidate buffers. */
++#endif
++#if SDL_VIDEO_DRIVER_X11_DRI2_PVR2D
++	/* Forcefully throttle to something sensible if we are not vsynced. */
++	/* We do this AFTER swapping because in truth there's no doublebuf if we are
++	   not accelerated; sleeping here gives time to the server/compositor
++	   for doing its job and copying what was posted in the previous swapbuffers
++	   call, reducing tearing. */
++	if (!dri2_accel) {
++		Uint32 now = SDL_GetTicks();
++		const int delay = 30; /* 30ms delay per frame ~= 30fps */
++		while (now < dri2_last_swap + delay) {
++			SDL_Delay(dri2_last_swap + delay - now);
++			now = SDL_GetTicks();
++		}
++		dri2_last_swap = now;
++
++		/* Whether this actually does something I'm yet to see. */
++		X11_PVR2D_WaitFlip(this);
++	}
++#endif
+ 	return(0);
+ }
+ 
++int X11_SetHWColorKey(_THIS, SDL_Surface *surface, Uint32 key)
++{
++#if SDL_VIDEO_DRIVER_X11_DRI2_PVR2D
++	/* Nothing to do; blitter will take care of this. */
++	return 0;
++#else
++	return -1;
++#endif
++}
++
++int X11_SetHWAlpha(_THIS, SDL_Surface *surface, Uint8 alpha)
++{
++#if SDL_VIDEO_DRIVER_X11_DRI2_PVR2D
++	/* Nothing to do; blitter will take care of this. */
++	return 0;
++#else
++	return -1;
++#endif
++}
++
++int X11_CheckHWBlit(_THIS, SDL_Surface *src, SDL_Surface *dst)
++{
++	src->flags &= ~SDL_HWACCEL;
++
++	if ( !(src->flags & SDL_HWSURFACE) || !(dst->flags & SDL_HWSURFACE) ) {
++		/* Do not allow SW->HW blits for now. */
++		return 0;
++	}
++
++#if SDL_VIDEO_DRIVER_X11_DRI2_PVR2D
++	if (dst == SDL_VideoSurface || src == SDL_VideoSurface) {
++		if (X11_DRI2_PrepareVideoSurface(this) < 0) return 0;
++		if (!dri2_accel) return 0;
++	}
++	src->flags |= SDL_HWACCEL;
++	src->map->hw_blit = X11_PVR2D_HWBlit;
++#else
++	return 0;
++#endif /* SDL_VIDEO_DRIVER_X11_DRI2_PVR2D */
++}
++
++int X11_CheckHWFill(_THIS, SDL_Surface *dst, SDL_Rect *dstrect, Uint32 color)
++{
++	if (dst == SDL_VideoSurface) {
++		if (X11_DRI2_PrepareVideoSurface(this) < 0) return 0;
++#if SDL_VIDEO_DRIVER_X11_DRI2_PVR2D
++		return dri2_accel;
++#else
++		return 0;
++#endif
++	}
++#if SDL_VIDEO_DRIVER_X11_DRI2_PVR2D
++	return 1;
++#else
++	return 0;
++#endif
++}
++
++int X11_FillHWRect(_THIS, SDL_Surface *dst, SDL_Rect *dstrect, Uint32 color)
++{
++#if SDL_VIDEO_DRIVER_X11_DRI2_PVR2D
++	return X11_PVR2D_FillHWRect(this, dst, dstrect, color);
++#endif
++	return 0;
++}
++
+ static void X11_NormalUpdate(_THIS, int numrects, SDL_Rect *rects)
+ {
+ 	int i;
+Index: repo/src/video/x11/SDL_x11video.c
+===================================================================
+--- repo.orig/src/video/x11/SDL_x11video.c
++++ repo/src/video/x11/SDL_x11video.c
+@@ -154,10 +154,11 @@ static SDL_VideoDevice *X11_CreateDevice
+ 		device->UpdateRects = NULL;
+ 		device->VideoQuit = X11_VideoQuit;
+ 		device->AllocHWSurface = X11_AllocHWSurface;
+-		device->CheckHWBlit = NULL;
+-		device->FillHWRect = NULL;
+-		device->SetHWColorKey = NULL;
+-		device->SetHWAlpha = NULL;
++		device->CheckHWBlit = X11_CheckHWBlit;
++		device->CheckHWFill = X11_CheckHWFill;
++		device->FillHWRect = X11_FillHWRect;
++		device->SetHWColorKey = X11_SetHWColorKey;
++		device->SetHWAlpha = X11_SetHWAlpha;
+ 		device->LockHWSurface = X11_LockHWSurface;
+ 		device->UnlockHWSurface = X11_UnlockHWSurface;
+ 		device->FlipHWSurface = X11_FlipHWSurface;
+@@ -663,6 +664,18 @@ static int X11_VideoInit(_THIS, SDL_Pixe
+ 	}
+ #endif /* SDL_VIDEO_DRIVER_X11_XINPUT2 */
+ 
++#if SDL_VIDEO_DRIVER_X11_DRI2
++	if (DRI2QueryExtension(SDL_Display, &dri2_event_base, &dri2_error_base)) {
++		this->info.hw_available = 1;
++		this->info.blit_hw = 1;
++		this->info.blit_hw_CC = 1;
++		this->info.blit_hw_A = 1;
++		this->info.blit_fill = 1;
++		/* This number is completely bogus. */
++		this->info.video_mem = 9 * 1024;
++	}
++#endif /* SDL_VIDEO_DRIVER_X11_DRI2 */
++
+ 	/* Get the available video modes */
+ 	if(X11_GetVideoModes(this) < 0) {
+ 		XCloseDisplay(GFX_Display);
+@@ -1122,6 +1135,9 @@ static int X11_CreateWindow(_THIS, SDL_S
+ 		} else {
+ 			screen->flags |= SDL_OPENGL;
+ 		}
++	} else if ( flags & SDL_HWSURFACE ) {
++		/* Also allow double buffered hardware surfaces. */
++		screen->flags |= flags & (SDL_HWSURFACE|SDL_DOUBLEBUF);
+ 	} else {
+ 		XGCValues gcv;
+ 
+@@ -1220,6 +1236,13 @@ SDL_Surface *X11_SetVideoMode(_THIS, SDL
+ 		}
+ 	}
+ 
++	if ( flags & SDL_HWSURFACE ) {
++		/* Clear hwsurface flag if not supported */
++		if (!this->info.hw_available) {
++			flags &= ~SDL_HWSURFACE;
++		}
++	}
++
+ 	/* Flush any delayed updates */
+ 	XSync(GFX_Display, False);
+ 
+@@ -1228,6 +1251,7 @@ SDL_Surface *X11_SetVideoMode(_THIS, SDL
+ 	if ( (SDL_Window)
+ 	      && ((saved_flags&SDL_OPENGL) == (flags&SDL_OPENGL))
+ 	      && ((saved_flags&SDL_OPENGLES) == (flags&SDL_OPENGLES))
++	      && ((saved_flags&SDL_HWSURFACE) == (flags&SDL_HWSURFACE))
+ 	      && (bpp == current->format->BitsPerPixel)
+           && ((saved_flags&SDL_NOFRAME) == (flags&SDL_NOFRAME)) ) {
+ 		if (X11_ResizeWindow(this, current, width, height, flags) < 0) {
+@@ -1272,7 +1296,8 @@ SDL_Surface *X11_SetVideoMode(_THIS, SDL
+ 	/* Set up the new mode framebuffer */
+ 	if ( ((current->w != width) || (current->h != height))
+           || ((saved_flags&SDL_OPENGL) != (flags&SDL_OPENGL))
+-          || ((saved_flags&SDL_OPENGLES) != (flags&SDL_OPENGLES)) ) {
++          || ((saved_flags&SDL_OPENGLES) != (flags&SDL_OPENGLES))
++          || ((saved_flags&SDL_HWSURFACE) != (flags&SDL_HWSURFACE)) ) {
+ 		current->w = width;
+ 		current->h = height;
+ 		current->pitch = SDL_CalculatePitch(current);
+Index: repo/src/video/x11/SDL_x11image_c.h
+===================================================================
+--- repo.orig/src/video/x11/SDL_x11image_c.h
++++ repo/src/video/x11/SDL_x11image_c.h
+@@ -33,6 +33,13 @@ extern int X11_LockHWSurface(_THIS, SDL_
+ extern void X11_UnlockHWSurface(_THIS, SDL_Surface *surface);
+ extern int X11_FlipHWSurface(_THIS, SDL_Surface *surface);
+ 
++extern int X11_SetHWColorKey(_THIS, SDL_Surface *surface, Uint32 key);
++extern int X11_SetHWAlpha(_THIS, SDL_Surface *surface, Uint8 alpha);
++
++extern int X11_CheckHWBlit(_THIS, SDL_Surface *src, SDL_Surface *dst);
++extern int X11_CheckHWFill(_THIS, SDL_Surface *dst, SDL_Rect *dstrect, Uint32 color);
++extern int X11_FillHWRect(_THIS, SDL_Surface *dst, SDL_Rect *dstrect, Uint32 color);
++
+ extern void X11_DisableAutoRefresh(_THIS);
+ extern void X11_EnableAutoRefresh(_THIS);
+ extern void X11_RefreshDisplay(_THIS);
+Index: repo/include/SDL_config.h.in
+===================================================================
+--- repo.orig/include/SDL_config.h.in
++++ repo/include/SDL_config.h.in
+@@ -283,6 +283,8 @@
+ #undef SDL_VIDEO_DRIVER_WSCONS
+ #undef SDL_VIDEO_DRIVER_X11
+ #undef SDL_VIDEO_DRIVER_X11_DGAMOUSE
++#undef SDL_VIDEO_DRIVER_X11_DRI2
++#undef SDL_VIDEO_DRIVER_X11_DRI2_PVR2D
+ #undef SDL_VIDEO_DRIVER_X11_DYNAMIC
+ #undef SDL_VIDEO_DRIVER_X11_DYNAMIC_XEXT
+ #undef SDL_VIDEO_DRIVER_X11_DYNAMIC_XI
+Index: repo/src/video/x11/SDL_x11pvr2d.c
+===================================================================
+--- /dev/null
++++ repo/src/video/x11/SDL_x11pvr2d.c
+@@ -0,0 +1,325 @@
++/*
++    SDL - Simple DirectMedia Layer
++    Copyright (C) 1997-2009 Sam Lantinga
++
++    This library is free software; you can redistribute it and/or
++    modify it under the terms of the GNU Lesser General Public
++    License as published by the Free Software Foundation; either
++    version 2.1 of the License, or (at your option) any later version.
++
++    This library is distributed in the hope that it will be useful,
++    but WITHOUT ANY WARRANTY; without even the implied warranty of
++    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++    Lesser General Public License for more details.
++
++    You should have received a copy of the GNU Lesser General Public
++    License along with this library; if not, write to the Free Software
++    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
++
++    Sam Lantinga
++    slouken@libsdl.org
++	Javier S. Pedro
++	maemo@javispedro.com
++
++*/
++#include "SDL_config.h"
++
++#if SDL_VIDEO_DRIVER_X11_DRI2_PVR2D
++
++#include "SDL_x11pvr2d_c.h"
++
++/* This is shared between all surfaces. */
++PVR2DCONTEXTHANDLE pvr2d_ctx = NULL;
++static unsigned int pvr2d_refcount = 0;
++static int pvr2d_fd;
++
++struct pvr2dhwdata {
++	PVR2DMEMINFO *info;
++	PVR2DFORMAT format;
++};
++
++/* Not multithreading safe; this should only be called from rendering thread. */
++
++int X11_PVR2D_AddRef(_THIS)
++{
++	if (pvr2d_refcount == 0) {
++		/* Initialize PVR2D; point to primary device. */
++		int numDevs = PVR2DEnumerateDevices(NULL);
++		if (numDevs <= 0) return -1;
++
++		PVR2DDEVICEINFO *devs = malloc(sizeof(PVR2DDEVICEINFO) * numDevs);
++		if (PVR2DEnumerateDevices(devs) != PVR2D_OK) {
++			free(devs);
++			return -1;
++		}
++
++		unsigned long dev_id = devs[0].ulDevID;
++		free(devs);
++
++		if (PVR2DCreateDeviceContext(dev_id, &pvr2d_ctx, 0) != PVR2D_OK) {
++			return -1;
++		}
++
++		pvr2d_fd = PVR2DGetFileHandle(pvr2d_ctx);
++		if (pvr2d_fd == -1) {
++			return -1;
++		}
++	}
++	pvr2d_refcount++;
++	return 0;
++}
++
++int X11_PVR2D_DecRef(_THIS)
++{
++	if (pvr2d_refcount == 0) return -1;
++	pvr2d_refcount--;
++	if (pvr2d_refcount == 0) {
++		/* Deinitialize PVR2D to conserve device memory. */
++		PVR2DDestroyDeviceContext(pvr2d_ctx);
++	}
++	return 0;
++}
++
++void X11_PVR2D_WaitFlip(_THIS)
++{
++	PVR2DERROR err = PVR2DUpdateEventReq(pvr2d_ctx, 0, NULL);
++	if (err != PVR2D_OK) {
++		fprintf(stderr, "Failed to request a PVR2DFlipEvent\n");
++		return;
++	}
++	static char buf[1024]; /* We couldn't care less about the contents of it. */
++	read(pvr2d_fd, buf, sizeof(buf));
++}
++
++static PVR2DFORMAT X11_PVR2D_MapFormat(SDL_PixelFormat *format)
++{
++	switch (format->BitsPerPixel) {
++		case 8:
++			return PVR2D_PAL8;
++		case 16:
++			return PVR2D_RGB565;
++		case 24:
++			return PVR2D_RGB888;
++		case 32:
++			return PVR2D_ARGB8888;
++		default:  /* This will cause errors when blitting instead of garbage. */
++			return PVR2D_NO_OF_FORMATS;
++	}
++}
++
++static int X11_PVR2D_HasAlphaChannel(PVR2DFORMAT format)
++{
++	return format == PVR2D_ARGB4444 || format == PVR2D_ARGB8888 ||
++		format == PVR2D_ARGB1555 ||
++		format == PVR2D_ALPHA8 || format == PVR2D_ALPHA4;
++}
++
++int X11_PVR2D_SetupImage(_THIS, SDL_Surface *screen)
++{
++	if (!screen->hwdata) {
++		screen->hwdata = malloc(sizeof(struct pvr2dhwdata));
++	}
++	struct pvr2dhwdata * hwdata = (struct pvr2dhwdata *) screen->hwdata;
++	if (dri2_accel) {
++		hwdata->info = dri2_cache[dri2_buf].dev_mem;
++		hwdata->format = X11_PVR2D_MapFormat(screen->format);
++	}
++	return 0;
++}
++
++void X11_PVR2D_DestroyImage(_THIS, SDL_Surface *screen)
++{
++	if (screen->hwdata) {
++		free(screen->hwdata);
++		screen->hwdata = NULL;
++	}
++}
++
++void * X11_PVR2D_MapBuffer(_THIS, DRI2Buffer *buffer, void **buf)
++{
++	PVR2DERROR err;
++	PVR2DMEMINFO **meminfo = (PVR2DMEMINFO**) buf;
++	err = PVR2DMemMap(pvr2d_ctx, 0, (void*)buffer->name, meminfo);
++	if (err != PVR2D_OK) {
++		return NULL;
++	}
++	return (*meminfo)->pBase;
++}
++
++void X11_PVR2D_UnmapBuffer(_THIS, void *buf)
++{
++	PVR2DMEMINFO *meminfo = buf;
++	PVR2DMemFree(pvr2d_ctx, meminfo);
++}
++
++void X11_PVR2D_WaitBlits(_THIS, SDL_Surface *surface)
++{
++	struct pvr2dhwdata * hwdata = (struct pvr2dhwdata *) surface->hwdata;
++	PVR2DQueryBlitsComplete(pvr2d_ctx, hwdata->info, 1);
++}
++
++void X11_PVR2D_ClearCache(_THIS, SDL_Surface *surface)
++{
++	struct pvr2dhwdata * hwdata = (struct pvr2dhwdata *) surface->hwdata;
++	PVR2DERROR err = PVR2DCacheFlushDRI(pvr2d_ctx, PVR2D_CFLUSH_TO_GPU,
++		(unsigned long) hwdata->info->pBase, hwdata->info->ui32MemSize);
++	printf("cache err = %d\n", err);
++}
++
++int X11_PVR2D_AllocSurface(_THIS, SDL_Surface *surface)
++{
++	PVR2DERROR err;
++
++	surface->flags &= ~SDL_HWSURFACE;
++	struct pvr2dhwdata * hwdata = (struct pvr2dhwdata *) SDL_malloc(sizeof(struct pvr2dhwdata));
++	if (!hwdata) {
++		SDL_OutOfMemory();
++		return -1;
++	}
++
++	hwdata->format = X11_PVR2D_MapFormat(surface->format);
++	if (hwdata->format == PVR2D_NO_OF_FORMATS) {
++		SDL_SetError("Invalid surface pixel format for PVR2D");
++		free(hwdata);
++		return -1;
++	}
++
++	unsigned long bytes = surface->h * surface->pitch;
++	err = PVR2DMemAlloc(pvr2d_ctx, bytes, PVR2D_ALIGNMENT_4, 0, &hwdata->info);
++	if (err != PVR2D_OK) {
++		SDL_SetError("PVR2D memory failure");
++		free(hwdata);
++		return -1;
++	}
++
++	surface->flags |= SDL_HWSURFACE;
++	surface->hwdata = (void*) hwdata;
++
++	return 0;
++}
++
++void X11_PVR2D_FreeSurface(_THIS, SDL_Surface *surface)
++{
++	struct pvr2dhwdata * hwdata = (struct pvr2dhwdata *) surface->hwdata;
++	PVR2DERROR err = PVR2DMemFree(pvr2d_ctx, hwdata->info);
++	if (err) {
++		fprintf(stderr, "PVR2DMemFree error %d\n", err);
++	}
++	free(hwdata);
++}
++
++int X11_PVR2D_LockHWSurface(_THIS, SDL_Surface *surface)
++{
++	struct pvr2dhwdata * hwdata = (struct pvr2dhwdata *) surface->hwdata;
++	X11_PVR2D_WaitBlits(this, surface);
++	surface->pixels = hwdata->info->pBase;
++	return 0;
++}
++
++void X11_PVR2D_UnlockHWSurface(_THIS, SDL_Surface *surface)
++{
++	surface->pixels = NULL;
++}
++
++int X11_PVR2D_FillHWRect(_THIS, SDL_Surface *dst, SDL_Rect *dstrect, Uint32 color)
++{
++	struct pvr2dhwdata * hwdata = (struct pvr2dhwdata *) dst->hwdata;
++	PVR2DERROR err;
++	PVR2DBLTINFO blt = {0};
++	Uint8 r, g, b, a;
++	SDL_GetRGBA(color, dst->format, &r, &g, &b, &a);
++
++	blt.CopyCode = PVR2DPATROPcopy;
++	blt.Colour = ((a << 24) & 0xFF000000U) |
++	             ((r << 16) & 0x00FF0000U) |
++	             ((g << 8 ) & 0x0000FF00U) |
++	             ((b      ) & 0x000000FFU);
++	blt.pDstMemInfo = hwdata->info;
++	blt.DstOffset = 0;
++	blt.DstStride = dst->pitch;
++	blt.DstX = dstrect->x;
++	blt.DstY = dstrect->y;
++	blt.DSizeX = dstrect->w;
++	blt.DSizeY = dstrect->h;
++	blt.DstFormat = hwdata->format;
++	blt.DstSurfWidth = dst->w;
++	blt.DstSurfHeight = dst->h;
++
++	err = PVR2DBlt(pvr2d_ctx, &blt);
++	if (err) {
++		fprintf(stderr, "PVR2DBlt failed with err=%d\n", err);
++		return -1;
++	}
++	return 0;
++}
++
++int X11_PVR2D_HWBlit(SDL_Surface *src, SDL_Rect *srcrect, SDL_Surface *dst, SDL_Rect *dstrect)
++{
++	struct pvr2dhwdata * srcdata = (struct pvr2dhwdata *) src->hwdata;
++	struct pvr2dhwdata * dstdata = (struct pvr2dhwdata *) dst->hwdata;
++	PVR2DERROR err;
++	PVR2DBLTINFO blt = {0};
++
++	blt.CopyCode = PVR2DROPcopy;
++	blt.BlitFlags = PVR2D_BLIT_DISABLE_ALL;
++	blt.pDstMemInfo = dstdata->info;
++	blt.DstOffset = 0;
++	blt.DstStride = dst->pitch;
++	blt.DstX = dstrect->x;
++	blt.DstY = dstrect->y;
++	blt.DSizeX = dstrect->w;
++	blt.DSizeY = dstrect->h;
++	blt.DstFormat = dstdata->format;
++
++	blt.pSrcMemInfo = srcdata->info;
++	blt.SrcOffset = 0;
++	blt.SrcStride = src->pitch;
++	blt.SrcX = srcrect->x;
++	blt.SrcY = srcrect->y;
++	blt.SizeX = srcrect->w;
++	blt.SizeY = srcrect->h;
++	blt.SrcFormat = srcdata->format;
++
++	/* Here comes the implementation of the SDL_SetAlpha logic. */
++	char src_has_alpha = X11_PVR2D_HasAlphaChannel(srcdata->format);
++	char dst_has_alpha = X11_PVR2D_HasAlphaChannel(dstdata->format);
++	char alpha_enabled = (src->flags & SDL_SRCALPHA) == SDL_SRCALPHA;
++	char ckey_enabled = (src->flags & SDL_SRCCOLORKEY) == SDL_SRCCOLORKEY;
++
++	if ( ckey_enabled && (!src_has_alpha || !alpha_enabled)) {
++		Uint8 r, g, b, a;
++		SDL_GetRGBA(src->format->colorkey, src->format, &r, &g, &b, &a);
++		blt.ColourKey = ((a << 24) & 0xFF000000U) |
++			         ((r << 16) & 0x00FF0000U) |
++			         ((g << 8 ) & 0x0000FF00U) |
++			         ((b      ) & 0x000000FFU);
++		switch (srcdata->format) {
++			case PVR2D_RGB565:
++				blt.ColourKeyMask = CKEY_MASK_565;
++				break;
++			default:  /* Paletted is also rgba8888 here. */
++				blt.ColourKeyMask = CKEY_MASK_8888;
++				break;
++		}
++		blt.BlitFlags |= PVR2D_BLIT_CK_ENABLE | PVR2D_BLIT_COLKEY_SOURCE;
++	}
++	if ( alpha_enabled ) {
++		if (src_has_alpha) {
++			blt.AlphaBlendingFunc = PVR2D_ALPHA_OP_SRC_DSTINV;
++			blt.BlitFlags |= PVR2D_BLIT_PERPIXEL_ALPHABLEND_ENABLE;
++		} else {
++			blt.GlobalAlphaValue = src->format->alpha;
++			blt.BlitFlags |= PVR2D_BLIT_GLOBAL_ALPHA_ENABLE;
++		}
++	}
++
++	err = PVR2DBlt(pvr2d_ctx, &blt);
++	if (err) {
++		fprintf(stderr, "PVR2DBlt failed with err=%d\n", err);
++		return -1;
++	}
++	return 0;
++}
++
++#endif /* SDL_VIDEO_DRIVER_X11_DRI2_PVR2D */
++
+Index: repo/src/video/x11/SDL_x11pvr2d_c.h
+===================================================================
+--- /dev/null
++++ repo/src/video/x11/SDL_x11pvr2d_c.h
+@@ -0,0 +1,62 @@
++/*
++    SDL - Simple DirectMedia Layer
++    Copyright (C) 1997-2009 Sam Lantinga
++
++    This library is free software; you can redistribute it and/or
++    modify it under the terms of the GNU Lesser General Public
++    License as published by the Free Software Foundation; either
++    version 2.1 of the License, or (at your option) any later version.
++
++    This library is distributed in the hope that it will be useful,
++    but WITHOUT ANY WARRANTY; without even the implied warranty of
++    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++    Lesser General Public License for more details.
++
++    You should have received a copy of the GNU Lesser General Public
++    License along with this library; if not, write to the Free Software
++    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
++
++    Sam Lantinga
++    slouken@libsdl.org
++	Javier S. Pedro
++	maemo@javispedro.com
++
++*/
++
++#ifndef _SDL_x11pvr2d_c_h
++#define _SDL_x11pvr2d_c_h
++
++#include "SDL_config.h"
++#include "SDL_x11video.h"
++#include <pvr2d.h>
++
++/* Surfaces smaller than this many pixels should be software blitted. */
++#define PVR2D_THRESHOLD_SIZE 8192
++
++extern PVR2DCONTEXTHANDLE pvr2d_ctx;
++
++extern int X11_PVR2D_AddRef(_THIS);
++extern int X11_PVR2D_DecRef(_THIS);
++extern void X11_PVR2D_WaitFlip(_THIS);
++
++extern int X11_PVR2D_SetupImage(_THIS, SDL_Surface *screen);
++extern void X11_PVR2D_DestroyImage(_THIS, SDL_Surface *screen);
++extern void * X11_PVR2D_MapBuffer(_THIS, DRI2Buffer *buffer, void **buf);
++extern void X11_PVR2D_UnmapBuffer(_THIS, void *buf);
++
++extern void X11_PVR2D_ClearCache(_THIS, SDL_Surface *surface);
++extern void X11_PVR2D_WaitBlits(_THIS, SDL_Surface *surface);
++
++extern int X11_PVR2D_AllocSurface(_THIS, SDL_Surface *surface);
++extern void X11_PVR2D_FreeSurface(_THIS, SDL_Surface *surface);
++
++extern int X11_PVR2D_LockHWSurface(_THIS, SDL_Surface *surface);
++extern void X11_PVR2D_UnlockHWSurface(_THIS, SDL_Surface *surface);
++
++extern int X11_PVR2D_FillHWRect(_THIS, SDL_Surface *dst, SDL_Rect *dstrect, Uint32 color);
++
++extern int X11_PVR2D_HWBlit(SDL_Surface *src, SDL_Rect *srcrect,
++					SDL_Surface *dst, SDL_Rect *dstrect);
++
++#endif /* _SDL_x11pvr2d_c_h */
++

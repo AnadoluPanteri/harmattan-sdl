@@ -11,3 +11,8 @@ defaults
 x11-no-grab
 x11-fullscreen
 x11-xinput2
+x11-event-hook
+dri2
+checkhwfill
+default-swsurface
+dri2-pvr2d-hwsurface

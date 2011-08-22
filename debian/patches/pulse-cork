@@ -1,61 +1,120 @@
-Index: SDL-1.2.14/src/audio/SDL_audio.c
+Index: repo/src/audio/SDL_audio.c
 ===================================================================
---- SDL-1.2.14.orig/src/audio/SDL_audio.c
-+++ SDL-1.2.14/src/audio/SDL_audio.c
-@@ -223,8 +223,8 @@ int SDLCALL SDL_RunAudio(void *audiop)
+--- repo.orig/src/audio/SDL_audio.c
++++ repo/src/audio/SDL_audio.c
+@@ -116,6 +116,7 @@ static AudioBootStrap *bootstrap[] = {
+ 	NULL
+ };
+ SDL_AudioDevice *current_audio = NULL;
++static int suppress_audio = 0;
+ 
+ /* Various local functions */
+ int SDL_AudioInit(const char *driver_name);
+@@ -176,6 +177,13 @@ int SDLCALL SDL_RunAudio(void *audiop)
+ 
+ 	/* Loop, filling the audio buffers */
+ 	while ( audio->enabled ) {
++		int pause_on = audio->paused || suppress_audio;
++		if ( audio->dev_paused != pause_on ) {
++			if ( audio->PauseAudio ) {
++				audio->PauseAudio(audio, pause_on);
++			}
++			audio->dev_paused = pause_on;
++		}
+ 
+ 		/* Fill the current buffer with sound */
+ 		if ( audio->convert.needed ) {
+@@ -193,7 +201,7 @@ int SDLCALL SDL_RunAudio(void *audiop)
+ 
+ 		SDL_memset(stream, silence, stream_len);
+ 
+-		if ( ! audio->paused ) {
++		if ( !pause_on ) {
+ 			SDL_mutexP(audio->mixer_lock);
+ 			(*fill)(udata, stream, stream_len);
+ 			SDL_mutexV(audio->mixer_lock);
+@@ -223,8 +231,8 @@ int SDLCALL SDL_RunAudio(void *audiop)
  		}
  	}
  
 -	/* Wait for the audio to drain.. */
 -	if ( audio->WaitDone ) {
 +	/* Wait for the audio to drain if not paused */
-+	if ( !audio->paused && audio->WaitDone ) {
++	if ( !audio->paused && !suppress_audio && audio->WaitDone ) {
  		audio->WaitDone(audio);
  	}
  
-@@ -590,6 +590,9 @@ void SDL_PauseAudio (int pause_on)
- 	SDL_AudioDevice *audio = current_audio;
+@@ -576,7 +584,7 @@ SDL_audiostatus SDL_GetAudioStatus(void)
+ 
+ 	status = SDL_AUDIO_STOPPED;
+ 	if ( audio && audio->enabled ) {
+-		if ( audio->paused ) {
++		if ( audio->paused || suppress_audio ) {
+ 			status = SDL_AUDIO_PAUSED;
+ 		} else {
+ 			status = SDL_AUDIO_PLAYING;
+@@ -591,6 +599,20 @@ void SDL_PauseAudio (int pause_on)
  
  	if ( audio ) {
-+		if ( audio->PauseAudio ) {
-+			audio->PauseAudio(audio, pause_on);
-+		}
  		audio->paused = pause_on;
++		if ( !pause_on && audio->thread && audio->WakeAudio ) {
++			audio->WakeAudio(audio);
++		}
++	}
++}
++
++void SDL_SuppressAudio (int pause_on)
++{
++	SDL_AudioDevice *audio = current_audio;
++
++	suppress_audio = pause_on;
++
++	if ( !pause_on && audio && audio->thread && audio->WakeAudio ) {
++		audio->WakeAudio(audio);
  	}
  }
-@@ -625,6 +628,9 @@ void SDL_AudioQuit(void)
+ 
+@@ -625,6 +647,9 @@ void SDL_AudioQuit(void)
  
  	if ( audio ) {
  		audio->enabled = 0;
-+		if ( audio->thread && audio->CancelAudio ) {
-+			audio->CancelAudio(audio);
++		if ( audio->thread && audio->WakeAudio ) {
++			audio->WakeAudio(audio);
 +		}
  		if ( audio->thread != NULL ) {
  			SDL_WaitThread(audio->thread, NULL);
  		}
-Index: SDL-1.2.14/src/audio/SDL_sysaudio.h
+Index: repo/src/audio/SDL_sysaudio.h
 ===================================================================
---- SDL-1.2.14.orig/src/audio/SDL_sysaudio.h
-+++ SDL-1.2.14/src/audio/SDL_sysaudio.h
+--- repo.orig/src/audio/SDL_sysaudio.h
++++ repo/src/audio/SDL_sysaudio.h
 @@ -52,6 +52,8 @@ struct SDL_AudioDevice {
  	void (*PlayAudio)(_THIS);
  	Uint8 *(*GetAudioBuf)(_THIS);
  	void (*WaitDone)(_THIS);
 +	void (*PauseAudio)(_THIS, int pause_on);
-+	void (*CancelAudio)(_THIS);
++	void (*WakeAudio)(_THIS);
  	void (*CloseAudio)(_THIS);
  
  	/* * * */
-Index: SDL-1.2.14/src/audio/pulse/SDL_pulseaudio.c
+@@ -71,6 +73,7 @@ struct SDL_AudioDevice {
+ 	/* Current state flags */
+ 	int enabled;
+ 	int paused;
++	int dev_paused;
+ 	int opened;
+ 
+ 	/* Fake audio buffer for when the audio hardware is busy */
+Index: repo/src/audio/pulse/SDL_pulseaudio.c
 ===================================================================
---- SDL-1.2.14.orig/src/audio/pulse/SDL_pulseaudio.c
-+++ SDL-1.2.14/src/audio/pulse/SDL_pulseaudio.c
+--- repo.orig/src/audio/pulse/SDL_pulseaudio.c
++++ repo/src/audio/pulse/SDL_pulseaudio.c
 @@ -54,6 +54,8 @@ static int PULSE_OpenAudio(_THIS, SDL_Au
  static void PULSE_WaitAudio(_THIS);
  static void PULSE_PlayAudio(_THIS);
  static Uint8 *PULSE_GetAudioBuf(_THIS);
 +static void PULSE_PauseAudio(_THIS, int pause_on);
-+static void PULSE_CancelAudio(_THIS);
++static void PULSE_WakeAudio(_THIS);
  static void PULSE_CloseAudio(_THIS);
  static void PULSE_WaitDone(_THIS);
  
@@ -99,31 +158,43 @@ Index: SDL-1.2.14/src/audio/pulse/SDL_pulseaudio.c
  	this->PlayAudio = PULSE_PlayAudio;
  	this->GetAudioBuf = PULSE_GetAudioBuf;
 +	this->PauseAudio = PULSE_PauseAudio;
-+	this->CancelAudio = PULSE_CancelAudio;
++	this->WakeAudio = PULSE_WakeAudio;
  	this->CloseAudio = PULSE_CloseAudio;
 +
  	this->WaitDone = PULSE_WaitDone;
  
  	this->free = Audio_DeleteDevice;
-@@ -296,7 +308,7 @@ AudioBootStrap PULSE_bootstrap = {
+@@ -295,23 +307,25 @@ AudioBootStrap PULSE_bootstrap = {
+ /* This function waits until it is possible to write a full sound buffer */
  static void PULSE_WaitAudio(_THIS)
  {
- 	int size;
+-	int size;
 -	while(1) {
 +	do {
  		if (SDL_NAME(pa_context_get_state)(context) != PA_CONTEXT_READY ||
  		    SDL_NAME(pa_stream_get_state)(stream) != PA_STREAM_READY ||
  		    SDL_NAME(pa_mainloop_iterate)(mainloop, 1, NULL) < 0) {
-@@ -306,7 +318,7 @@ static void PULSE_WaitAudio(_THIS)
- 		size = SDL_NAME(pa_stream_writable_size)(stream);
+ 			this->enabled = 0;
+ 			return;
+ 		}
+-		size = SDL_NAME(pa_stream_writable_size)(stream);
++		int size = SDL_NAME(pa_stream_writable_size)(stream);
  		if (size >= mixlen)
  			return;
 -	}
-+	} while (this->enabled);
++	} while (this->enabled && !this->dev_paused);
++	/* If dev_paused, go back to the mainloop if we are awaken to check stuff
++	 * like Unpause from time to time. */
  }
  
  static void PULSE_PlayAudio(_THIS)
-@@ -321,6 +333,30 @@ static Uint8 *PULSE_GetAudioBuf(_THIS)
+ {
+ 	/* Write the audio data */
++	if (this->dev_paused) return;
+ 	if (SDL_NAME(pa_stream_write)(stream, mixbuf, mixlen, NULL, 0LL, PA_SEEK_RELATIVE) < 0)
+ 		this->enabled = 0;
+ }
+@@ -321,6 +335,31 @@ static Uint8 *PULSE_GetAudioBuf(_THIS)
  	return(mixbuf);
  }
  
@@ -138,14 +209,15 @@ Index: SDL-1.2.14/src/audio/pulse/SDL_pulseaudio.c
 +	if (!o)
 +		return;
 +
-+	/* Pausing audio can be an asynchronous operation; we will send silence in the meanwhile. */
++	/* Pausing audio can be an asynchronous operation;
++	 * we will send silence in the meanwhile. */
 +
 +	SDL_NAME(pa_operation_unref)(o);
 +}
 +
-+static void PULSE_CancelAudio(_THIS)
++static void PULSE_WakeAudio(_THIS)
 +{
-+	/* Ensure the audio thread knows it is going to be closed. */
++	/* This can be called asynchronously to wakeup the audio thread. */
 +	if (mainloop != NULL) {
 +		SDL_NAME(pa_mainloop_wakeup)(mainloop);
 +	}
@@ -154,16 +226,18 @@ Index: SDL-1.2.14/src/audio/pulse/SDL_pulseaudio.c
  static void PULSE_CloseAudio(_THIS)
  {
  	if ( mixbuf != NULL ) {
-@@ -401,7 +437,7 @@ static int PULSE_OpenAudio(_THIS, SDL_Au
+@@ -401,7 +440,9 @@ static int PULSE_OpenAudio(_THIS, SDL_Au
  	pa_sample_spec  paspec;
  	pa_buffer_attr  paattr;
  	pa_channel_map  pacmap;
 -	pa_stream_flags_t flags = 0;
 +	pa_stream_flags_t flags = PA_STREAM_START_CORKED;
++
++	this->dev_paused = 1;
  
  	paspec.format = PA_SAMPLE_INVALID;
  	for ( test_format = SDL_FirstAudioFormat(spec->format); test_format; ) {
-@@ -449,7 +485,7 @@ static int PULSE_OpenAudio(_THIS, SDL_Au
+@@ -449,7 +490,7 @@ static int PULSE_OpenAudio(_THIS, SDL_Au
  	paattr.maxlength = -1;
  	paattr.minreq = mixlen; /* -1 can lead to pa_stream_writable_size()
  				   >= mixlen never becoming true */
@@ -172,3 +246,21 @@ Index: SDL-1.2.14/src/audio/pulse/SDL_pulseaudio.c
  #else
  	paattr.tlength = mixlen*2;
  	paattr.prebuf = mixlen*2;
+Index: repo/include/SDL_audio.h
+===================================================================
+--- repo.orig/include/SDL_audio.h
++++ repo/include/SDL_audio.h
+@@ -196,6 +196,13 @@ extern DECLSPEC SDL_audiostatus SDLCALL
+ extern DECLSPEC void SDLCALL SDL_PauseAudio(int pause_on);
+ 
+ /**
++ * This function does the same as SDL_PauseAudio(), but can be called even
++ * when there's no active audio stream, and will override SDL_PauseAudio():
++ * Audio will only play if it is not suppressed and not paused.
++ */
++extern DECLSPEC void SDLCALL SDL_SuppressAudio(int pause_on);
++
++/**
+  * This function loads a WAVE from the data source, automatically freeing
+  * that source if 'freesrc' is non-zero.  For example, to load a WAVE file,
+  * you could do:

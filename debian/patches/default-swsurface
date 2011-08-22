@@ -1,0 +1,14 @@
+Index: repo/src/video/SDL_surface.c
+===================================================================
+--- repo.orig/src/video/SDL_surface.c
++++ repo/src/video/SDL_surface.c
+@@ -57,9 +57,6 @@ SDL_Surface * SDL_CreateRGBSurface (Uint
+ 		screen = NULL;
+ 	}
+ 	if ( screen && ((screen->flags&SDL_HWSURFACE) == SDL_HWSURFACE) ) {
+-		if ( (flags&(SDL_SRCCOLORKEY|SDL_SRCALPHA)) != 0 ) {
+-			flags |= SDL_HWSURFACE;
+-		}
+ 		if ( (flags & SDL_SRCCOLORKEY) == SDL_SRCCOLORKEY ) {
+ 			if ( ! current_video->info.blit_hw_CC ) {
+ 				flags &= ~SDL_HWSURFACE;
