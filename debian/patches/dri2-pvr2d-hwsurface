@@ -269,40 +269,47 @@ Index: repo/src/video/x11/SDL_x11image.c
  /* Various screen update functions available */
  static void X11_NormalUpdate(_THIS, int numrects, SDL_Rect *rects);
  static void X11_MITSHMUpdate(_THIS, int numrects, SDL_Rect *rects);
-@@ -131,6 +305,16 @@ error:
+@@ -131,6 +305,17 @@ error:
  
  void X11_DestroyImage(_THIS, SDL_Surface *screen)
  {
-+#if SDL_VIDEO_DRIVER_X11_DRI2
 +	if (screen->flags & SDL_HWSURFACE) {
++#if SDL_VIDEO_DRIVER_X11_DRI2
 +		DRI2DestroyDrawable(SDL_Display, SDL_Window);
 +		X11_DRI2_InvalidateCache(this);
 +#if SDL_VIDEO_DRIVER_X11_DRI2_PVR2D
 +		X11_PVR2D_DestroyImage(this, screen);
 +		X11_PVR2D_DecRef(this);
 +#endif
-+	}
++		screen->flags &= ~(SDL_HWSURFACE|SDL_DOUBLEBUF);
 +#endif
++	}
  	if ( SDL_Ximage ) {
  		XDestroyImage(SDL_Ximage);
  #ifndef NO_SHARED_MEMORY
-@@ -187,6 +371,15 @@ int X11_ResizeImage(_THIS, SDL_Surface *
+@@ -187,6 +372,21 @@ int X11_ResizeImage(_THIS, SDL_Surface *
  	X11_DestroyImage(this, screen);
          if ( flags & (SDL_OPENGL|SDL_OPENGLES) ) {  /* No image when using GL */
          	retval = 0;
 +#if SDL_VIDEO_DRIVER_X11_DRI2
-+		} else if (flags & SDL_HWSURFACE) {
-+			DRI2CreateDrawable(SDL_Display, SDL_Window);
++        } else if (flags & SDL_HWSURFACE) {
++		DRI2CreateDrawable(SDL_Display, SDL_Window);
 +#if SDL_VIDEO_DRIVER_X11_DRI2_PVR2D
-+			X11_PVR2D_AddRef(this);
++		retval = X11_PVR2D_AddRef(this);
++#else
++		SDL_SetError("No available direct rendering manager to use with DRI");
++		retval = 1;
 +#endif
++		if (retval == 0) {
++			screen->flags |= flags & (SDL_HWSURFACE|SDL_DOUBLEBUF);
 +			this->UpdateRects = X11_DRI2_Update;
 +			dri2_buf = -1;
++		}
 +#endif
          } else {
  		retval = X11_SetupImage(this, screen);
  		/* We support asynchronous blitting on the display */
-@@ -207,15 +400,43 @@ int X11_ResizeImage(_THIS, SDL_Surface *
+@@ -207,15 +407,43 @@ int X11_ResizeImage(_THIS, SDL_Surface *
  /* We don't actually allow hardware surfaces other than the main one */
  int X11_AllocHWSurface(_THIS, SDL_Surface *surface)
  {
@@ -347,7 +354,7 @@ Index: repo/src/video/x11/SDL_x11image.c
  	if ( (surface == SDL_VideoSurface) && blit_queued ) {
  		XSync(GFX_Display, False);
  		blit_queued = 0;
-@@ -224,14 +445,114 @@ int X11_LockHWSurface(_THIS, SDL_Surface
+@@ -224,14 +452,119 @@ int X11_LockHWSurface(_THIS, SDL_Surface
  }
  void X11_UnlockHWSurface(_THIS, SDL_Surface *surface)
  {
@@ -367,6 +374,11 @@ Index: repo/src/video/x11/SDL_x11image.c
  
  int X11_FlipHWSurface(_THIS, SDL_Surface *surface)
  {
++#if SDL_VIDEO_DRIVER_X11_DRI2_PVR2D
++	/* This will ensure GetBuffers has been called at least once. */
++	int r = X11_DRI2_PrepareVideoSurface(this);
++	if (r != 0) return r;
++#endif
 +#if SDL_VIDEO_DRIVER_X11_DRI2
 +	CARD64 unused;
 +	DRI2SwapBuffers(SDL_Display, SDL_Window, 0, 0, 0, &unused);
@@ -502,45 +514,35 @@ Index: repo/src/video/x11/SDL_x11video.c
  	/* Get the available video modes */
  	if(X11_GetVideoModes(this) < 0) {
  		XCloseDisplay(GFX_Display);
-@@ -1122,6 +1135,9 @@ static int X11_CreateWindow(_THIS, SDL_S
+@@ -1122,6 +1135,8 @@ static int X11_CreateWindow(_THIS, SDL_S
  		} else {
  			screen->flags |= SDL_OPENGL;
  		}
 +	} else if ( flags & SDL_HWSURFACE ) {
-+		/* Also allow double buffered hardware surfaces. */
-+		screen->flags |= flags & (SDL_HWSURFACE|SDL_DOUBLEBUF);
++		/* Hardware surfaces do not need a GC. */
  	} else {
  		XGCValues gcv;
  
-@@ -1220,6 +1236,13 @@ SDL_Surface *X11_SetVideoMode(_THIS, SDL
+@@ -1220,6 +1235,11 @@ SDL_Surface *X11_SetVideoMode(_THIS, SDL
  		}
  	}
  
-+	if ( flags & SDL_HWSURFACE ) {
-+		/* Clear hwsurface flag if not supported */
-+		if (!this->info.hw_available) {
-+			flags &= ~SDL_HWSURFACE;
-+		}
++	/* Clear HWSURFACE and DOUBLEBUF flags if not supported. */
++	if (!this->info.hw_available) {
++		flags &= ~(SDL_HWSURFACE|SDL_DOUBLEBUF);
 +	}
 +
  	/* Flush any delayed updates */
  	XSync(GFX_Display, False);
  
-@@ -1228,6 +1251,7 @@ SDL_Surface *X11_SetVideoMode(_THIS, SDL
- 	if ( (SDL_Window)
- 	      && ((saved_flags&SDL_OPENGL) == (flags&SDL_OPENGL))
- 	      && ((saved_flags&SDL_OPENGLES) == (flags&SDL_OPENGLES))
-+	      && ((saved_flags&SDL_HWSURFACE) == (flags&SDL_HWSURFACE))
- 	      && (bpp == current->format->BitsPerPixel)
-           && ((saved_flags&SDL_NOFRAME) == (flags&SDL_NOFRAME)) ) {
- 		if (X11_ResizeWindow(this, current, width, height, flags) < 0) {
-@@ -1272,7 +1296,8 @@ SDL_Surface *X11_SetVideoMode(_THIS, SDL
+@@ -1272,7 +1292,9 @@ SDL_Surface *X11_SetVideoMode(_THIS, SDL
  	/* Set up the new mode framebuffer */
  	if ( ((current->w != width) || (current->h != height))
            || ((saved_flags&SDL_OPENGL) != (flags&SDL_OPENGL))
 -          || ((saved_flags&SDL_OPENGLES) != (flags&SDL_OPENGLES)) ) {
 +          || ((saved_flags&SDL_OPENGLES) != (flags&SDL_OPENGLES))
-+          || ((saved_flags&SDL_HWSURFACE) != (flags&SDL_HWSURFACE)) ) {
++          || ((saved_flags&SDL_HWSURFACE) != (flags&SDL_HWSURFACE))
++          || ((saved_flags&SDL_DOUBLEBUF) != (flags&SDL_DOUBLEBUF)) ) {
  		current->w = width;
  		current->h = height;
  		current->pitch = SDL_CalculatePitch(current);
