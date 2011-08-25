@@ -1,0 +1,665 @@
+Index: repo/configure.in
+===================================================================
+--- repo.orig/configure.in
++++ repo/configure.in
+@@ -270,6 +270,9 @@ if test x$enable_joystick != xyes; then
+ else
+     SOURCES="$SOURCES $srcdir/src/joystick/*.c"
+ fi
++AC_ARG_ENABLE(sensorfw,
++AC_HELP_STRING([--enable-sensorfw], [Enable the use of the Meego sensor framework to show various sensors as joystick devices [[default=yes]]]),
++              , enable_sensorfw=yes)
+ AC_ARG_ENABLE(cdrom,
+ AC_HELP_STRING([--enable-cdrom], [Enable the cdrom subsystem [[default=yes]]]),
+               , enable_cdrom=yes)
+@@ -2440,6 +2443,23 @@ case "$host" in
+                 AC_DEFINE(SDL_JOYSTICK_LINUX)
+                 SOURCES="$SOURCES $srcdir/src/joystick/linux/*.c"
+                 have_joystick=yes
++				if test x$enable_sensorfw = xyes; then
++					AC_PATH_PROG(PKG_CONFIG, pkg-config, no)
++					AC_MSG_CHECKING(for D-Bus support)
++					if test x$PKG_CONFIG != xno; then
++						if $PKG_CONFIG --atleast-pkgconfig-version 0.7 && $PKG_CONFIG --atleast-version 1.0 dbus-1; then
++						    DBUS_CFLAGS=`$PKG_CONFIG --cflags dbus-1`
++						    DBUS_LIBS=`$PKG_CONFIG --libs dbus-1`
++						    have_dbus=yes
++						fi
++					fi
++					AC_MSG_RESULT($have_dbus)
++				fi
++				if test x$have_dbus = xyes; then
++					EXTRA_CFLAGS="$EXTRA_CFLAGS $DBUS_CFLAGS"
++					EXTRA_LDFLAGS="$EXTRA_LDFLAGS $DBUS_LIBS"
++				    AC_DEFINE(SDL_JOYSTICK_LINUX_SENSORFW)
++				fi
+             ;;
+           esac
+         fi
+Index: repo/include/SDL_config.h.in
+===================================================================
+--- repo.orig/include/SDL_config.h.in
++++ repo/include/SDL_config.h.in
+@@ -211,6 +211,7 @@
+ #undef SDL_JOYSTICK_DUMMY
+ #undef SDL_JOYSTICK_IOKIT
+ #undef SDL_JOYSTICK_LINUX
++#undef SDL_JOYSTICK_LINUX_SENSORFW
+ #undef SDL_JOYSTICK_MACOS
+ #undef SDL_JOYSTICK_MINT
+ #undef SDL_JOYSTICK_OS2
+Index: repo/src/joystick/linux/SDL_sysjoystick.c
+===================================================================
+--- repo.orig/src/joystick/linux/SDL_sysjoystick.c
++++ repo/src/joystick/linux/SDL_sysjoystick.c
+@@ -39,6 +39,10 @@
+ #include "../SDL_sysjoystick.h"
+ #include "../SDL_joystick_c.h"
+ 
++#if SDL_JOYSTICK_LINUX_SENSORFW
++#include "SDL_sensorfw.h"
++#endif
++
+ /* Special joystick configurations */
+ static struct {
+ 	const char *name;
+@@ -415,7 +419,12 @@ int SDL_SYS_JoystickInit(void)
+ 	struct stat sb;
+ 	int n, duplicate;
+ 
++#if SDL_JOYSTICK_LINUX_SENSORFW
++	SDL_SFW_Init();
++	numjoysticks = sdl_sfw_num_joysticks;
++#else
+ 	numjoysticks = 0;
++#endif
+ 
+ 	/* First see if the user specified a joystick to use */
+ 	if ( SDL_getenv("SDL_JOYSTICK_DEVICE") != NULL ) {
+@@ -502,6 +511,12 @@ int SDL_SYS_JoystickInit(void)
+ /* Function to get the device-dependent name of a joystick */
+ const char *SDL_SYS_JoystickName(int index)
+ {
++#if SDL_JOYSTICK_LINUX_SENSORFW
++	if (index < sdl_sfw_num_joysticks) {
++		return SDL_SFW_JoystickName(index);
++	}
++#endif
++
+ 	int fd;
+ 	static char namebuf[128];
+ 	char *name;
+@@ -781,6 +796,12 @@ static void ConfigLogicalJoystick(SDL_Jo
+  */
+ int SDL_SYS_JoystickOpen(SDL_Joystick *joystick)
+ {
++#if SDL_JOYSTICK_LINUX_SENSORFW
++	if (joystick->index < sdl_sfw_num_joysticks) {
++		return SDL_SFW_JoystickOpen(joystick);
++	}
++#endif
++
+ 	int fd;
+ 	SDL_logical_joydecl(int realindex);
+ 	SDL_logical_joydecl(SDL_Joystick *realjoy = NULL);
+@@ -1139,7 +1160,14 @@ static __inline__ void EV_HandleEvents(S
+ void SDL_SYS_JoystickUpdate(SDL_Joystick *joystick)
+ {
+ 	int i;
+-	
++
++#if SDL_JOYSTICK_LINUX_SENSORFW
++	if (joystick->index < sdl_sfw_num_joysticks) {
++		SDL_SFW_JoystickUpdate(joystick);
++		return;
++	}
++#endif
++
+ #if SDL_INPUT_LINUXEV
+ 	if ( joystick->hwdata->is_hid )
+ 		EV_HandleEvents(joystick);
+@@ -1164,6 +1192,13 @@ void SDL_SYS_JoystickUpdate(SDL_Joystick
+ /* Function to close a joystick after use */
+ void SDL_SYS_JoystickClose(SDL_Joystick *joystick)
+ {
++#if SDL_JOYSTICK_LINUX_SENSORFW
++	if (joystick->index < sdl_sfw_num_joysticks) {
++		SDL_SFW_JoystickClose(joystick);
++		return;
++	}
++#endif
++
+ #ifndef NO_LOGICAL_JOYSTICKS
+ 	register int i;
+ 	if (SDL_joylist[joystick->index].fname == NULL) {
+@@ -1197,6 +1232,10 @@ void SDL_SYS_JoystickQuit(void)
+ 		SDL_free(SDL_joylist[i].fname);
+ 		SDL_joylist[i].fname = NULL;
+ 	}
++
++#if SDL_JOYSTICK_LINUX_SENSORFW
++	SDL_SFW_Quit();
++#endif
+ }
+ 
+ #endif /* SDL_JOYSTICK_LINUX */
+Index: repo/src/events/SDL_events.c
+===================================================================
+--- repo.orig/src/events/SDL_events.c
++++ repo/src/events/SDL_events.c
+@@ -262,6 +262,16 @@ int SDL_StartEventLoop(Uint32 flags)
+ 	SDL_eventstate &= ~(0x00000001 << SDL_SYSWMEVENT);
+ 	SDL_ProcessEvents[SDL_SYSWMEVENT] = SDL_IGNORE;
+ 
++#if !SDL_JOYSTICK_DISABLED
++	/* Also disable joystick events by default. */
++	SDL_eventstate &= ~SDL_JOYEVENTMASK;
++	SDL_ProcessEvents[SDL_JOYAXISMOTION] = SDL_IGNORE;
++	SDL_ProcessEvents[SDL_JOYBALLMOTION] = SDL_IGNORE;
++	SDL_ProcessEvents[SDL_JOYHATMOTION] = SDL_IGNORE;
++	SDL_ProcessEvents[SDL_JOYBUTTONDOWN] = SDL_IGNORE;
++	SDL_ProcessEvents[SDL_JOYBUTTONUP] = SDL_IGNORE;
++#endif
++
+ #ifdef SDL_EVENT_WAKEUP_PIPE
+ 	retcode = pipe(wakeup_pipe);
+ 	if (retcode != 0) {
+Index: repo/src/joystick/linux/SDL_sensorfw.c
+===================================================================
+--- /dev/null
++++ repo/src/joystick/linux/SDL_sensorfw.c
+@@ -0,0 +1,451 @@
++#include <unistd.h>
++#include <fcntl.h>
++#include <errno.h>
++#include <dbus/dbus.h>
++
++#include <sys/types.h>
++#include <sys/ioctl.h>
++#include <sys/socket.h>
++#include <sys/un.h>
++
++#include "../SDL_sysjoystick.h"
++#include "../SDL_joystick_c.h"
++
++#include "SDL_sensorfw.h"
++
++#define SERVICE_NAME "com.nokia.SensorService"
++#define MANAGER_PATH "/SensorManager"
++#define MANAGER_IFACE "local.SensorManager"
++
++#define SINT16_MAX 32767
++#define SINT16_MIN (-32768)
++
++#if 0
++#define DPRINT(...) printf(__VA_ARGS__)
++#else
++#define DPRINT(...)
++#endif
++
++#if SDL_JOYSTICK_LINUX_SENSORFW
++
++int sdl_sfw_num_joysticks = 0;
++
++static DBusConnection *system_bus;
++
++typedef enum {
++	ACCELEROMETER = 0, SENSOR_COUNT
++} SensorType;
++
++/* This is prepared to export more than one SensorFW sensor as joystick device,
++ * but I decided against it because to be honest no device other than the
++ * accelerometer makes sense as -1.0 ... 1.0 joystick. */
++
++typedef struct {
++	SensorType type;
++	const char *sfw_name;
++	const char *dbus_path;
++	const char *iface_name;
++	const char *name;
++	unsigned int pkt_sz;
++	int sdl_id;
++	int session_id;
++	int fd;
++} Sensor;
++
++typedef struct {
++	long long timestamp;
++	int x, y, z;
++} AccelerometerData;
++static AccelerometerData last_accelerometer;
++
++#define SENSOR_INIT(type, sfw, iface, name, strct) \
++	{ type, sfw, MANAGER_PATH "/" sfw, iface, name, sizeof(strct), -1, -1, -1 }
++
++static Sensor sensors[] = {
++	SENSOR_INIT(ACCELEROMETER, "accelerometersensor", "local.AccelerometerSensor", "Accelerometer", AccelerometerData),
++};
++
++static inline Sint16 scale(long v, long offset, long divider)
++{
++	long s = ((v + offset) * SINT16_MAX) / divider;
++	if (s > SINT16_MAX) return SINT16_MAX;
++	if (s < SINT16_MIN) return SINT16_MIN;
++	return s;
++}
++
++static void update_axis(SDL_Joystick *joystick, Uint8 axis,
++  int value, int *last, int offset, int divider)
++{
++	if (value != *last) {
++		Sint16 scaled = scale(value, offset, divider);
++		SDL_PrivateJoystickAxis(joystick, axis, scaled);
++		*last = value;
++	}
++}
++
++static void process_packet(SDL_Joystick *joystick, Sensor *s, void *data)
++{
++	switch (s->type) {
++		case ACCELEROMETER: {
++			AccelerometerData *d = (AccelerometerData *)data;
++			update_axis(joystick, 0, d->x, &last_accelerometer.x, 0, 1000);
++			update_axis(joystick, 1, -d->y, &last_accelerometer.y, 0, 1000);
++			update_axis(joystick, 2, d->z, &last_accelerometer.z, 0, 1000);
++			break;
++		}
++	}
++}
++
++static Sensor * find_sensor_by_sdl_id(int sdl_id)
++{
++	int i;
++	for (i = 0; i < SENSOR_COUNT; i++) {
++		if (sensors[i].sdl_id == sdl_id) {
++			return &sensors[i];
++		}
++	}
++	return NULL;
++}
++
++static int load_plugin_for_sensor(Sensor *s)
++{
++	DBusMessage *msg, *reply;
++	dbus_bool_t res;
++
++	msg = dbus_message_new_method_call(SERVICE_NAME, MANAGER_PATH,
++		MANAGER_IFACE, "loadPlugin");
++	if (!msg) return -1;
++
++	dbus_message_append_args(msg,
++		DBUS_TYPE_STRING, &s->sfw_name,
++		DBUS_TYPE_INVALID);
++
++	reply = dbus_connection_send_with_reply_and_block(system_bus, msg, -1, NULL);
++	dbus_message_unref(msg);
++	if (!reply)	return -1;
++
++	dbus_message_get_args(reply, NULL,
++		DBUS_TYPE_BOOLEAN, &res,
++		DBUS_TYPE_INVALID);
++	dbus_message_unref(reply);
++
++	return res ? 0 : -1;
++}
++
++static int request_sensor(Sensor *s)
++{
++	DBusMessage *msg, *reply;
++	dbus_int32_t session_id;
++	dbus_int64_t pid = getpid();
++
++	DPRINT("Trying to request sensor %s\n", s->sfw_name);
++
++	msg = dbus_message_new_method_call(SERVICE_NAME, MANAGER_PATH,
++		MANAGER_IFACE, "requestSensor");
++	if (!msg) return -1;
++
++	dbus_message_append_args(msg,
++		DBUS_TYPE_STRING, &s->sfw_name,
++		DBUS_TYPE_INT64, &pid,
++		DBUS_TYPE_INVALID);
++
++	reply = dbus_connection_send_with_reply_and_block(system_bus, msg, -1, NULL);
++	dbus_message_unref(msg);
++	if (!reply)	return -1;
++
++	dbus_message_get_args(reply, NULL,
++		DBUS_TYPE_INT32, &session_id,
++		DBUS_TYPE_INVALID);
++	dbus_message_unref(reply);
++
++	DPRINT("Got sensor %s session %d\n", s->sfw_name, session_id);
++
++	if (session_id >= 0) {
++		s->session_id = session_id;
++		return 0;
++	} else {
++		return -1;
++	}
++}
++
++static int release_sensor(Sensor *s)
++{
++	DBusMessage *msg, *reply;
++	dbus_int64_t pid = getpid();
++	dbus_bool_t res;
++
++	msg = dbus_message_new_method_call(SERVICE_NAME, MANAGER_PATH,
++		MANAGER_IFACE, "releaseSensor");
++	if (!msg) return -1;
++
++	dbus_message_append_args(msg,
++		DBUS_TYPE_STRING, &s->sfw_name,
++		DBUS_TYPE_INT32, &s->session_id,
++		DBUS_TYPE_INT64, &pid,
++		DBUS_TYPE_INVALID);
++
++	reply = dbus_connection_send_with_reply_and_block(system_bus, msg, -1, NULL);
++	dbus_message_unref(msg);
++	if (!reply)	return -1;
++
++	dbus_message_get_args(reply, NULL,
++		DBUS_TYPE_BOOLEAN, &res,
++		DBUS_TYPE_INVALID);
++	dbus_message_unref(reply);
++
++	if (res) {
++		s->session_id = -1;
++		return 0;
++	} else {
++		return -1;
++	}
++}
++
++static int start_sensor(Sensor *s)
++{
++	DBusMessage *msg, *reply;
++
++	msg = dbus_message_new_method_call(SERVICE_NAME, s->dbus_path, s->iface_name,
++		"start");
++	if (!msg) return -1;
++
++	dbus_message_append_args(msg,
++		DBUS_TYPE_INT32, &s->session_id,
++		DBUS_TYPE_INVALID);
++
++	reply = dbus_connection_send_with_reply_and_block(system_bus, msg, -1, NULL);
++	dbus_message_unref(msg);
++	if (!reply)	return -1;
++
++	dbus_message_unref(reply);
++
++	DPRINT("Sensor %s is now started\n", s->sfw_name);
++
++	return 0;
++}
++
++static int stop_sensor(Sensor *s)
++{
++	DBusMessage *msg, *reply;
++
++	msg = dbus_message_new_method_call(SERVICE_NAME, s->dbus_path, s->iface_name,
++		"stop");
++	if (!msg) return -1;
++
++	dbus_message_append_args(msg,
++		DBUS_TYPE_INT32, &s->session_id,
++		DBUS_TYPE_INVALID);
++
++	reply = dbus_connection_send_with_reply_and_block(system_bus, msg, -1, NULL);
++	dbus_message_unref(msg);
++	if (!reply)	return -1;
++
++	dbus_message_unref(reply);
++
++	DPRINT("Sensor %s is now stopped\n", s->sfw_name);
++
++	return 0;
++}
++
++static int open_socket(Sensor *s)
++{
++	struct sockaddr_un addr = { 0 };
++	int fd = socket(AF_UNIX, SOCK_STREAM, 0);
++	int rc;
++	char tag;
++
++	if (fd < 0) return -1;
++
++	addr.sun_family = AF_UNIX;
++	strcpy(addr.sun_path, "/tmp/sensord.sock");
++
++	rc = connect(fd, (struct sockaddr*)&addr, SUN_LEN(&addr));
++	if (rc < 0) {
++		close(fd);
++		return rc;
++	}
++
++	rc = send(fd, &s->session_id, sizeof(s->session_id), 0);
++	if (rc < 0) {
++		close(fd);
++		return rc;
++	}
++
++	rc = recv(fd, &tag, 1, 0);
++	if (rc < 0) {
++		close(fd);
++		return rc;
++	}
++
++	/* Close on exec() */
++	rc = fcntl(fd, F_SETFD, FD_CLOEXEC);
++	if (rc < 0) {
++		close(fd);
++		return rc;
++	}
++
++	DPRINT("Opened socket fd=%d for %s session %d\n",
++		fd, s->sfw_name, s->session_id);
++	s->fd = fd;
++
++	return 0;
++}
++
++static void close_socket(Sensor *s)
++{
++	DPRINT("Closing socket %d for %s\n", s->fd, s->sfw_name);
++	close(s->fd);
++	s->fd = -1;
++}
++
++static void flush_socket(Sensor *s)
++{
++	static char buf[128];
++	int avail, rc;
++
++	do {
++		rc = ioctl(s->fd, FIONREAD, &avail);
++		if (rc < 0) return;
++
++		rc = read(s->fd, buf, sizeof(buf));
++		if (rc < 0) return;
++	} while (avail > 0);
++}
++
++static ssize_t read_socket_block(Sensor *s, void *buf, size_t size)
++{
++	char *b = buf;
++	size_t bytes = 0, rem;
++
++	while ((rem = size - bytes) > 0) {
++		ssize_t r = read(s->fd, b, rem);
++		if (r <= 0) return r;
++
++		bytes += r;
++		b += r;
++	}
++
++	return bytes;
++}
++
++void SDL_SFW_Init()
++{
++	int i;
++
++	system_bus = dbus_bus_get_private(DBUS_BUS_SYSTEM, NULL);
++	if (!system_bus) return;
++
++	sdl_sfw_num_joysticks = 0;
++
++	for (i = 0; i < SENSOR_COUNT; i++) {
++		if (load_plugin_for_sensor(&sensors[i]) == 0) {
++			sensors[i].sdl_id = sdl_sfw_num_joysticks;
++			sdl_sfw_num_joysticks++;
++			DPRINT("Found %s in sensor framework\n", sensors[i].sfw_name);
++		}
++	}
++}
++
++void SDL_SFW_Quit()
++{
++	int i;
++	for (i = 0; i < SENSOR_COUNT; i++) {
++		if (sensors[i].session_id != -1) {
++			release_sensor(&sensors[i]);
++		}
++		if (sensors[i].fd != -1) {
++			close_socket(&sensors[i]);
++		}
++		sensors[i].sdl_id = -1;
++	}
++}
++
++extern const char *SDL_SFW_JoystickName(int index)
++{
++	Sensor *s = find_sensor_by_sdl_id(index);
++	if (s) {
++		return s->name;
++	}
++	return NULL;
++}
++
++extern int SDL_SFW_JoystickOpen(SDL_Joystick *joystick)
++{
++	Sensor *s = find_sensor_by_sdl_id(joystick->index);
++	int rc;
++
++	rc = request_sensor(s);
++	if (rc < 0) {
++		SDL_SetError("Failed to request the sensor to sensord");
++		return -1;
++	}
++
++	rc = open_socket(s);
++	if (rc < 0) {
++		SDL_SetError("Failed to open a socket with sensord");
++		return -1;
++	}
++
++	rc = start_sensor(s);
++	if (rc < 0) {
++		SDL_SetError("Failed to start sensor");
++		return -1;
++	}
++
++	switch (s->type) {
++		case ACCELEROMETER:
++			joystick->naxes = 3;
++			break;
++	}
++
++	joystick->hwdata = (void*) s;
++	return 0;
++}
++
++extern void SDL_SFW_JoystickUpdate(SDL_Joystick *joystick)
++{
++	static char buffer[128];
++	Sensor *s = (Sensor*)joystick->hwdata;
++	int avail, rc;
++	unsigned int count;
++	const unsigned int max = (sizeof(buffer) - sizeof(count)) / s->pkt_sz;
++
++	if (s->fd == -1) return;
++
++	rc = ioctl(s->fd, FIONREAD, &avail);
++	if (rc < 0) return;
++
++	while (avail >= sizeof(count)) {
++		rc = read_socket_block(s, &count, sizeof(count));
++		if (rc < 0) return;
++		if (count == 0) return;
++		if (count > max) {
++			/* Too many packets! */
++			DPRINT("Socket overrun\n");
++			flush_socket(s);
++			return;
++		}
++
++		while (count > 0) {
++			rc = read_socket_block(s, buffer, s->pkt_sz);
++			if (rc < 0) return;
++
++			/* Process a received packet! */
++			process_packet(joystick, s, buffer);
++
++			count--;
++		}
++
++		rc = ioctl(s->fd, FIONREAD, &avail);
++	}
++}
++
++extern void SDL_SFW_JoystickClose(SDL_Joystick *joystick)
++{
++	Sensor *s = (Sensor*)joystick->hwdata;
++
++	release_sensor(s);
++	close_socket(s);
++}
++
++#endif
+Index: repo/src/joystick/linux/SDL_sensorfw.h
+===================================================================
+--- /dev/null
++++ repo/src/joystick/linux/SDL_sensorfw.h
+@@ -0,0 +1,38 @@
++/*
++    SDL - Simple DirectMedia Layer
++    Copyright (C) 1997-2009 Sam Lantinga
++
++    This library is SDL_free software; you can redistribute it and/or
++    modify it under the terms of the GNU Lesser General Public
++    License as published by the Free Software Foundation; either
++    version 2.1 of the License, or (at your option) any later version.
++
++    This library is distributed in the hope that it will be useful,
++    but WITHOUT ANY WARRANTY; without even the implied warranty of
++    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++    Lesser General Public License for more details.
++
++    You should have received a copy of the GNU Lesser General Public
++    License along with this library; if not, write to the Free Software
++    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
++
++    Sam Lantinga
++    slouken@libsdl.org
++*/
++#ifndef _SDL_sensorfw_h
++#define _SDL_sensorfw_h
++
++#include "SDL_config.h"
++#include "SDL_joystick.h"
++
++extern int sdl_sfw_num_joysticks;
++
++extern void SDL_SFW_Init(void);
++extern void SDL_SFW_Quit(void);
++
++extern const char *SDL_SFW_JoystickName(int index);
++extern int SDL_SYS_JoystickOpen(SDL_Joystick *joystick);
++extern void SDL_SYS_JoystickUpdate(SDL_Joystick *joystick);
++extern void SDL_SYS_JoystickClose(SDL_Joystick *joystick);
++
++#endif /* _SDL_sensorfw_h */

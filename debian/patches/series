@@ -16,3 +16,4 @@ dri2
 checkhwfill
 default-swsurface
 dri2-pvr2d-hwsurface
+sensord-accelerometer
