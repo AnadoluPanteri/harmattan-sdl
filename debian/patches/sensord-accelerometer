@@ -168,7 +168,7 @@ Index: repo/src/joystick/linux/SDL_sensorfw.c
 ===================================================================
 --- /dev/null
 +++ repo/src/joystick/linux/SDL_sensorfw.c
-@@ -0,0 +1,451 @@
+@@ -0,0 +1,458 @@
 +#include <unistd.h>
 +#include <fcntl.h>
 +#include <errno.h>
@@ -505,6 +505,7 @@ Index: repo/src/joystick/linux/SDL_sensorfw.c
 +
 +	system_bus = dbus_bus_get_private(DBUS_BUS_SYSTEM, NULL);
 +	if (!system_bus) return;
++	dbus_connection_set_exit_on_disconnect(system_bus, FALSE);
 +
 +	sdl_sfw_num_joysticks = 0;
 +
@@ -529,6 +530,12 @@ Index: repo/src/joystick/linux/SDL_sensorfw.c
 +		}
 +		sensors[i].sdl_id = -1;
 +	}
++
++	dbus_connection_close(system_bus);
++	dbus_connection_unref(system_bus);
++	system_bus = NULL;
++
++	sdl_sfw_num_joysticks = 0;
 +}
 +
 +extern const char *SDL_SFW_JoystickName(int index)
