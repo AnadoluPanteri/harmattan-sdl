@@ -354,7 +354,7 @@ Index: repo/src/video/x11/SDL_x11image.c
  	if ( (surface == SDL_VideoSurface) && blit_queued ) {
  		XSync(GFX_Display, False);
  		blit_queued = 0;
-@@ -224,14 +452,119 @@ int X11_LockHWSurface(_THIS, SDL_Surface
+@@ -224,14 +452,121 @@ int X11_LockHWSurface(_THIS, SDL_Surface
  }
  void X11_UnlockHWSurface(_THIS, SDL_Surface *surface)
  {
@@ -436,6 +436,7 @@ Index: repo/src/video/x11/SDL_x11image.c
 +	}
 +
 +#if SDL_VIDEO_DRIVER_X11_DRI2_PVR2D
++	if ((src->w * src->h) < PVR2D_THRESHOLD_SIZE) return 0;
 +	if (dst == SDL_VideoSurface || src == SDL_VideoSurface) {
 +		if (X11_DRI2_PrepareVideoSurface(this) < 0) return 0;
 +		if (!dri2_accel) return 0;
@@ -452,6 +453,7 @@ Index: repo/src/video/x11/SDL_x11image.c
 +	if (dst == SDL_VideoSurface) {
 +		if (X11_DRI2_PrepareVideoSurface(this) < 0) return 0;
 +#if SDL_VIDEO_DRIVER_X11_DRI2_PVR2D
++		if ((dstrect->w * dstrect->h) < PVR2D_THRESHOLD_SIZE) return 0;
 +		return dri2_accel;
 +#else
 +		return 0;
@@ -953,7 +955,7 @@ Index: repo/src/video/x11/SDL_x11pvr2d_c.h
 +#include <pvr2d.h>
 +
 +/* Surfaces smaller than this many pixels should be software blitted. */
-+#define PVR2D_THRESHOLD_SIZE 8192
++#define PVR2D_THRESHOLD_SIZE 32768
 +
 +extern PVR2DCONTEXTHANDLE pvr2d_ctx;
 +
