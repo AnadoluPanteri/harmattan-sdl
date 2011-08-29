@@ -168,7 +168,7 @@ Index: repo/src/joystick/linux/SDL_sensorfw.c
 ===================================================================
 --- /dev/null
 +++ repo/src/joystick/linux/SDL_sensorfw.c
-@@ -0,0 +1,458 @@
+@@ -0,0 +1,556 @@
 +#include <unistd.h>
 +#include <fcntl.h>
 +#include <errno.h>
@@ -179,6 +179,7 @@ Index: repo/src/joystick/linux/SDL_sensorfw.c
 +#include <sys/socket.h>
 +#include <sys/un.h>
 +
++#include "SDL_events.h"
 +#include "../SDL_sysjoystick.h"
 +#include "../SDL_joystick_c.h"
 +
@@ -204,12 +205,13 @@ Index: repo/src/joystick/linux/SDL_sensorfw.c
 +static DBusConnection *system_bus;
 +
 +typedef enum {
-+	ACCELEROMETER = 0, SENSOR_COUNT
++	ACCELEROMETER = 0, ROTATION, COMPASS, PROXIMITY, SENSOR_COUNT
 +} SensorType;
 +
-+/* This is prepared to export more than one SensorFW sensor as joystick device,
-+ * but I decided against it because to be honest no device other than the
-+ * accelerometer makes sense as -1.0 ... 1.0 joystick. */
++typedef struct {
++	long long timestamp;
++	int x, y, z;
++} TimedXyzData;
 +
 +typedef struct {
 +	SensorType type;
@@ -218,22 +220,43 @@ Index: repo/src/joystick/linux/SDL_sensorfw.c
 +	const char *iface_name;
 +	const char *name;
 +	unsigned int pkt_sz;
++	int interval;
 +	int sdl_id;
 +	int session_id;
 +	int fd;
 +} Sensor;
 +
-+typedef struct {
-+	long long timestamp;
-+	int x, y, z;
-+} AccelerometerData;
++typedef TimedXyzData AccelerometerData;
 +static AccelerometerData last_accelerometer;
 +
-+#define SENSOR_INIT(type, sfw, iface, name, strct) \
-+	{ type, sfw, MANAGER_PATH "/" sfw, iface, name, sizeof(strct), -1, -1, -1 }
++typedef TimedXyzData RotationData;
++static AccelerometerData last_rotation;
++
++typedef struct {
++	long long timestamp;
++	int degrees;
++	int raw_degrees;
++	int corrected_degrees;
++	int level;
++} CompassData;
++static CompassData last_compass;
++
++typedef struct {
++	long long timestamp;
++	unsigned int value;
++	unsigned char close;
++} ProximityData;
++static ProximityData last_proximity;
++
++#define SENSOR_INIT(type, sfw, iface, name, strct, interval) \
++	{ type, sfw, MANAGER_PATH "/" sfw, iface, name, sizeof(strct), \
++	  interval, -1, -1, -1 }
 +
 +static Sensor sensors[] = {
-+	SENSOR_INIT(ACCELEROMETER, "accelerometersensor", "local.AccelerometerSensor", "Accelerometer", AccelerometerData),
++	SENSOR_INIT(ACCELEROMETER, "accelerometersensor", "local.AccelerometerSensor", "SensorFW Accelerometer", AccelerometerData, 50),
++	SENSOR_INIT(ROTATION, "rotationsensor", "local.RotationSensor", "SensorFW Rotation", RotationData, 50),
++	SENSOR_INIT(COMPASS, "compasssensor", "local.CompassSensor", "SensorFW Compass", CompassData, 100),
++	SENSOR_INIT(PROXIMITY, "proximitysensor", "local.ProximitySensor", "SensorFW Proximity", ProximityData, 0),
 +};
 +
 +static inline Sint16 scale(long v, long offset, long divider)
@@ -254,16 +277,47 @@ Index: repo/src/joystick/linux/SDL_sensorfw.c
 +	}
 +}
 +
++static void update_button(SDL_Joystick *joystick, Uint8 button,
++  char value, char *last)
++{
++	/* Compare the boolean value of both variables. */
++	if (!value != !(*last)) {
++		SDL_PrivateJoystickButton(joystick, button,
++			value ? SDL_PRESSED : SDL_RELEASED);
++		*last = value;
++	}
++}
++
 +static void process_packet(SDL_Joystick *joystick, Sensor *s, void *data)
 +{
 +	switch (s->type) {
 +		case ACCELEROMETER: {
 +			AccelerometerData *d = (AccelerometerData *)data;
-+			update_axis(joystick, 0, d->x, &last_accelerometer.x, 0, 1000);
-+			update_axis(joystick, 1, -d->y, &last_accelerometer.y, 0, 1000);
-+			update_axis(joystick, 2, d->z, &last_accelerometer.z, 0, 1000);
-+			break;
++			update_axis(joystick, 0, d->x, &last_accelerometer.x, 0, 2000);
++			update_axis(joystick, 1, -d->y, &last_accelerometer.y, 0, 2000);
++			update_axis(joystick, 2, d->z, &last_accelerometer.z, 0, 2000);
 +		}
++		break;
++		case ROTATION: {
++			RotationData *d = (RotationData *)data;
++			update_axis(joystick, 0, d->x, &last_rotation.x, 0, 180);
++			update_axis(joystick, 1, d->y, &last_rotation.y, 0, 180);
++			update_axis(joystick, 2, d->z, &last_rotation.z, 0, 180);
++		}
++		break;
++		case COMPASS: {
++			CompassData *d = (CompassData *)data;
++			update_axis(joystick, 0, d->degrees, &last_compass.degrees, 0, 359);
++			update_axis(joystick, 1, d->raw_degrees, &last_compass.raw_degrees, 0, 359);
++			update_axis(joystick, 2, d->level, &last_compass.level, 0, 3);
++		}
++		break;
++		case PROXIMITY: {
++			ProximityData *d = (ProximityData *)data;
++			update_axis(joystick, 0, d->value, &last_proximity.value, 0, 1023);
++			update_button(joystick, 0, d->close, &last_proximity.close);
++		}
++		break;
 +	}
 +}
 +
@@ -365,6 +419,7 @@ Index: repo/src/joystick/linux/SDL_sensorfw.c
 +	dbus_message_unref(reply);
 +
 +	if (res) {
++		DPRINT("Sensor %s session %d released\n", s->sfw_name, s->session_id);
 +		s->session_id = -1;
 +		return 0;
 +	} else {
@@ -414,6 +469,31 @@ Index: repo/src/joystick/linux/SDL_sensorfw.c
 +	dbus_message_unref(reply);
 +
 +	DPRINT("Sensor %s is now stopped\n", s->sfw_name);
++
++	return 0;
++}
++
++static int configure_sensor_interval(Sensor *s)
++{
++	DBusMessage *msg, *reply;
++
++	msg = dbus_message_new_method_call(SERVICE_NAME, s->dbus_path, s->iface_name,
++		"setInterval");
++	if (!msg) return -1;
++
++	dbus_message_append_args(msg,
++		DBUS_TYPE_INT32, &s->session_id,
++		DBUS_TYPE_INT32, &s->interval,
++		DBUS_TYPE_INVALID);
++
++	reply = dbus_connection_send_with_reply_and_block(system_bus, msg, -1, NULL);
++	dbus_message_unref(msg);
++	if (!reply)	return -1;
++
++	dbus_message_unref(reply);
++
++	DPRINT("Sensor %s is configured with interval %dms\n",
++		s->sfw_name, s->interval);
 +
 +	return 0;
 +}
@@ -523,6 +603,7 @@ Index: repo/src/joystick/linux/SDL_sensorfw.c
 +	int i;
 +	for (i = 0; i < SENSOR_COUNT; i++) {
 +		if (sensors[i].session_id != -1) {
++			stop_sensor(&sensors[i]);
 +			release_sensor(&sensors[i]);
 +		}
 +		if (sensors[i].fd != -1) {
@@ -557,7 +638,6 @@ Index: repo/src/joystick/linux/SDL_sensorfw.c
 +		SDL_SetError("Failed to request the sensor to sensord");
 +		return -1;
 +	}
-+
 +	rc = open_socket(s);
 +	if (rc < 0) {
 +		SDL_SetError("Failed to open a socket with sensord");
@@ -570,9 +650,26 @@ Index: repo/src/joystick/linux/SDL_sensorfw.c
 +		return -1;
 +	}
 +
++	rc = configure_sensor_interval(s);
++	if (rc < 0) {
++		fprintf(stderr, "Failed to configure sensor '%s' interval to '%d' ms.\n",
++			s->sfw_name, s->interval);
++		/* This is not fatal. */
++	}
++
 +	switch (s->type) {
 +		case ACCELEROMETER:
 +			joystick->naxes = 3;
++			break;
++		case ROTATION:
++			joystick->naxes = 3;
++			break;
++		case COMPASS:
++			joystick->naxes = 3;
++			break;
++		case PROXIMITY:
++			joystick->naxes = 1;
++			joystick->nbuttons = 1;
 +			break;
 +	}
 +
@@ -622,6 +719,7 @@ Index: repo/src/joystick/linux/SDL_sensorfw.c
 +{
 +	Sensor *s = (Sensor*)joystick->hwdata;
 +
++	stop_sensor(s);
 +	release_sensor(s);
 +	close_socket(s);
 +}
