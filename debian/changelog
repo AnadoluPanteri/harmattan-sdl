@@ -1,3 +1,13 @@
+libsdl1.2 (1.2.14-0maemo6) unstable; urgency=low
+
+  * Releasing changes made by Javier S. Pedro <maemo@javispedro.com>: 
+    * Miscellaneous bug fixes
+    * Enabled sensors as joystick devices
+    * Enabled vibration suport
+    * Disabled DGA
+
+ -- Gerard Bosch Creus <gerard.bosch@nokia.com>  Wed, 14 Sep 2011 12:21:51 +0300
+
 libsdl1.2 (1.2.14-0maemo5) unstable; urgency=low
 
   * Disabled ALSA backend
