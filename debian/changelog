@@ -1,3 +1,9 @@
+libsdl1.2 (1.2.14-0maemo8) unstable; urgency=low
+
+  * Fixed issues with the dri2-pvr2d-hwsurface patch
+
+ -- Gerard Bosch Creus <gerard.bosch@nokia.com>  Mon, 19 Sep 2011 17:46:57 +0300
+
 libsdl1.2 (1.2.14-0maemo7) unstable; urgency=low
 
   * Updated control file
