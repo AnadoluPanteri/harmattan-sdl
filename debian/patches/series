@@ -19,3 +19,4 @@ dri2-pvr2d-hwsurface
 sensord-accelerometer
 haptic
 haptic-immersion
+force-fullscreen
