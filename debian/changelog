@@ -1,3 +1,9 @@
+libsdl1.2 (1:1.2.14-7maemo3) unstable; urgency=low
+
+  * Added epoch to satisfy BIFH
+
+ -- Matti Airas <matti.p.airas@nokia.com>  Mon, 28 Nov 2011 14:13:30 +0200
+
 libsdl1.2 (1.2.14-7maemo2) unstable; urgency=low
 
   * Applications are now always run full-screen
