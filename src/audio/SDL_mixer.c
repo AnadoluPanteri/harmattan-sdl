@@ -195,6 +195,8 @@ void SDL_MixAudio (Uint8 *dst, const Uint8 *src, Uint32 len, int volume)
 
 #if defined(__GNUC__) && defined(__M68000__) && defined(SDL_ASSEMBLY_ROUTINES)
 			SDL_MixAudio_m68k_S16LSB((short*)dst,(short*)src,(unsigned long)len,(long)volume);
+#elif defined(__GNUC__) && defined(__ARM_NEON__) && defined(SDL_ASSEMBLY_ROUTINES)
+			SDL_MixAudio_ARM_NEON_S16LSB(dst, src, len, volume);
 #else
 			{
 			Sint16 src1, src2;
