@@ -430,7 +430,7 @@ int SDL_OpenAudio(SDL_AudioSpec *desired, SDL_AudioSpec *obtained)
 	}
 	if ( desired->freq == 0 ) {
 		/* Pick some default audio frequency */
-		desired->freq = 22050;
+		desired->freq = 48000;
 	}
 	if ( desired->format == 0 ) {
 		env = SDL_getenv("SDL_AUDIO_FORMAT");
