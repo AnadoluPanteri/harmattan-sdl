@@ -4,7 +4,7 @@ Section: libs
 Maintainer: Gerard Bosch Creus <gerard.bosch@nokia.com>
 XSBC-Original-Maintainer: Javier S. Pedro <maemo@javispedro.com>
 Standards-Version: 3.7.3
-Build-Depends: dpkg (>= 1.13.2), debhelper (>= 4.0), quilt, autoconf,
+Build-Depends: dpkg (>= 1.13.2), debhelper (>= 4.0), autoconf,
  libx11-dev, libxext-dev, libxt-dev, libxv-dev, libxi-dev, x11proto-core-dev,
  libxfixes-dev, libdbus-1-dev, libpulse-dev, libimmvibe-dev [armel],
  opengles-sgx-img-common-dev [armel]

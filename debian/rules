@@ -45,7 +45,6 @@ endif
 configure: configure-stamp
 configure-stamp:
 	dh_testdir
-	QUILT_PATCHES=debian/patches quilt push -a || test $$? = 2
 	mkdir -p builddir
 	sh autogen.sh
 	(cd builddir; ../configure $(confflags))
@@ -61,7 +60,6 @@ clean:
 	dh_testdir
 	dh_testroot
 	rm -Rf builddir
-	QUILT_PATCHES=debian/patches quilt pop -a -R || test $$? = 2
 	rm -f configure
 	rm -f build-stamp configure-stamp
 	dh_clean
