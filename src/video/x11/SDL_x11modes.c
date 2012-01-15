@@ -37,6 +37,12 @@
 
 #define MAX(a, b)        (a > b ? a : b)
 
+enum {
+	_NET_WM_STATE_REMOVE = 0,
+	_NET_WM_STATE_ADD = 1,
+	_NET_WM_STATE_TOGGLE = 2
+};
+
 #if SDL_VIDEO_DRIVER_X11_XRANDR
 static int cmpmodelist(const void *va, const void *vb)
 {
@@ -961,35 +967,36 @@ int X11_ResizeFullScreen(_THIS)
         if ( window_h > real_h ) {
             real_h = MAX(real_h, screen_h);
         }
-        XMoveResizeWindow(SDL_Display, FSwindow, x, y, real_w, real_h);
+        XMoveResizeWindow(SDL_Display, WMwindow, x, y, real_w, real_h);
         move_cursor_to(this, real_w/2, real_h/2);
 
         /* Center and reparent the drawing window */
         x = (real_w - window_w)/2;
         y = (real_h - window_h)/2;
-        XReparentWindow(SDL_Display, SDL_Window, FSwindow, x, y);
+        XMoveWindow(SDL_Display, SDL_Window, x, y);
         /* FIXME: move the mouse to the old relative location */
         XSync(SDL_Display, True);   /* Flush spurious mode change events */
     }
     return(1);
 }
 
-void X11_QueueEnterFullScreen(_THIS)
+static void X11_SetNETWMFullScreenState(_THIS, int on)
 {
-    switch_waiting = 0x01 | SDL_FULLSCREEN;
-    switch_time = SDL_GetTicks() + 1500;
-#if 0 /* This causes a BadMatch error if the window is iconified (not needed) */
-    XSetInputFocus(SDL_Display, WMwindow, RevertToNone, CurrentTime);
-#endif
+	XEvent e = {0};
+	e.xclient.type = ClientMessage;
+	e.xclient.window = WMwindow;
+	e.xclient.message_type = atom(_NET_WM_STATE);
+	e.xclient.format = 32;
+	e.xclient.data.l[0] = on ? _NET_WM_STATE_ADD : _NET_WM_STATE_REMOVE;
+	e.xclient.data.l[1] = atom(_NET_WM_STATE_FULLSCREEN);
+	e.xclient.data.l[2] = 0;
+	XSendEvent(SDL_Display, DefaultRootWindow(SDL_Display), False,
+		SubstructureNotifyMask | SubstructureRedirectMask, &e);
 }
 
 int X11_EnterFullScreen(_THIS)
 {
     int okay;
-#if 0
-    Window tmpwin, *windows;
-    int i, nwindows;
-#endif
     int x = 0, y = 0;
     int real_w, real_h;
     int screen_w;
@@ -1012,41 +1019,6 @@ int X11_EnterFullScreen(_THIS)
     }
 #endif /* SDL_VIDEO_DRIVER_X11_XINERAMA */
 
-    /* Map the fullscreen window to blank the screen */
-    screen_w = DisplayWidth(SDL_Display, SDL_Screen);
-    screen_h = DisplayHeight(SDL_Display, SDL_Screen);
-    get_real_resolution(this, &real_w, &real_h);
-    real_w = MAX(window_w, MAX(real_w, screen_w));
-    real_h = MAX(window_h, MAX(real_h, screen_h));
-    XMoveResizeWindow(SDL_Display, FSwindow,
-                      x, y, real_w, real_h);
-    XMapRaised(SDL_Display, FSwindow);
-    X11_WaitMapped(this, FSwindow);
-
-#if 0 /* This seems to break WindowMaker in focus-follows-mouse mode */
-    /* Make sure we got to the top of the window stack */
-    if ( XQueryTree(SDL_Display, SDL_Root, &tmpwin, &tmpwin,
-                            &windows, &nwindows) && windows ) {
-        /* If not, try to put us there - if fail... oh well */
-        if ( windows[nwindows-1] != FSwindow ) {
-            tmpwin = windows[nwindows-1];
-            for ( i=0; i<nwindows; ++i ) {
-                if ( windows[i] == FSwindow ) {
-                    SDL_memcpy(&windows[i], &windows[i+1],
-                           (nwindows-i-1)*sizeof(windows[i]));
-                    break;
-                }
-            }
-            windows[nwindows-1] = FSwindow;
-            XRestackWindows(SDL_Display, windows, nwindows);
-            XSync(SDL_Display, False);
-        }
-        XFree(windows);
-    }
-#else
-    XRaiseWindow(SDL_Display, FSwindow);
-#endif
-
 #if SDL_VIDEO_DRIVER_X11_VIDMODE
     /* Save the current video mode */
     if ( use_vidmode ) {
@@ -1061,6 +1033,12 @@ int X11_EnterFullScreen(_THIS)
     if ( ! okay ) {
         X11_LeaveFullScreen(this);
     }
+
+	/* Tell window manager we want to go fullscreen. */
+	if ( okay ) {
+        X11_SetNETWMFullScreenState(this, 1);
+    }
+
     /* Set the colormap */
     if ( SDL_XColorMap ) {
         XInstallColormap(SDL_Display, SDL_XColorMap);
@@ -1085,7 +1063,9 @@ int X11_EnterFullScreen(_THIS)
 int X11_LeaveFullScreen(_THIS)
 {
     if ( currently_fullscreen ) {
-        XReparentWindow(SDL_Display, SDL_Window, WMwindow, 0, 0);
+		XMoveWindow(SDL_Display, SDL_Window, 0, 0);
+		X11_SetNETWMFullScreenState(this, 0);
+
 #if SDL_VIDEO_DRIVER_X11_VIDMODE
         if ( use_vidmode ) {
             restore_mode(this);
@@ -1119,8 +1099,6 @@ int X11_LeaveFullScreen(_THIS)
         }
 #endif
 
-        XUnmapWindow(SDL_Display, FSwindow);
-        X11_WaitUnmapped(this, FSwindow);
         XSync(SDL_Display, True);   /* Flush spurious mode change events */
         currently_fullscreen = 0;
     }

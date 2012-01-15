@@ -66,7 +66,6 @@ struct SDL_PrivateVideoData {
     Display *GFX_Display;	/* Used for graphics and colormap stuff */
     Visual *SDL_Visual;		/* The visual used by our window */
     Window WMwindow;		/* Input window, managed by window manager */
-    Window FSwindow;		/* Fullscreen window, completely unmanaged */
     Window SDL_Window;		/* Shared by both displays (no X security?) */
     Atom atoms[ATOM_COUNT];	/* X11 protocol atoms */
     WMcursor *BlankCursor;	/* The invisible cursor */
@@ -147,10 +146,6 @@ struct SDL_PrivateVideoData {
     int use_xme;
     int currently_fullscreen;
 
-    /* Automatic mode switching support (entering/leaving fullscreen) */
-    Uint32 switch_waiting;
-    Uint32 switch_time;
-
     /* Prevent too many XSync() calls */
     int blit_queued;
 
@@ -175,7 +170,6 @@ struct SDL_PrivateVideoData {
 #define SDL_Visual		(this->hidden->vis)
 #define SDL_Root		RootWindow(SDL_Display, SDL_Screen)
 #define WMwindow		(this->hidden->WMwindow)
-#define FSwindow		(this->hidden->FSwindow)
 #define SDL_Window		(this->hidden->SDL_Window)
 #define SDL_BlankCursor		(this->hidden->BlankCursor)
 #define SDL_IM			(this->hidden->X11_IM)
@@ -206,8 +200,6 @@ struct SDL_PrivateVideoData {
 #define use_xrandr		(this->hidden->use_xrandr)
 #define use_xme			(this->hidden->use_xme)
 #define currently_fullscreen	(this->hidden->currently_fullscreen)
-#define switch_waiting		(this->hidden->switch_waiting)
-#define switch_time		(this->hidden->switch_time)
 #define blit_queued		(this->hidden->blit_queued)
 #define SDL_DisplayColormap	(this->hidden->DisplayColormap)
 #define SDL_PrivateColormap	(this->hidden->PrivateColormap)

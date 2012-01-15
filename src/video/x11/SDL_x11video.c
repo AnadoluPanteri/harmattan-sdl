@@ -342,18 +342,15 @@ static void create_aux_windows(_THIS)
     char classname[1024];
     XSetWindowAttributes xattr;
     XWMHints *hints;
+    XClassHint *classhints;
     unsigned long app_event_mask;
     int def_vis = (SDL_Visual == DefaultVisual(SDL_Display, SDL_Screen));
 
     /* Don't create any extra windows if we are being managed */
     if ( SDL_windowid ) {
-	FSwindow = 0;
-	WMwindow = SDL_strtol(SDL_windowid, NULL, 0);
+        WMwindow = SDL_strtol(SDL_windowid, NULL, 0);
         return;
     }
-
-    if(FSwindow)
-	XDestroyWindow(SDL_Display, FSwindow);
 
 #if SDL_VIDEO_DRIVER_X11_XINERAMA
     if ( use_xinerama ) {
@@ -361,78 +358,66 @@ static void create_aux_windows(_THIS)
         y = xinerama_info.y_org;
     }
 #endif
-    xattr.override_redirect = True;
+
     xattr.background_pixel = def_vis ? BlackPixel(SDL_Display, SDL_Screen) : 0;
     xattr.border_pixel = 0;
     xattr.colormap = SDL_XColorMap;
 
-    FSwindow = XCreateWindow(SDL_Display, SDL_Root,
-                             x, y, 32, 32, 0,
-			     this->hidden->depth, InputOutput, SDL_Visual,
-			     CWOverrideRedirect | CWBackPixel | CWBorderPixel
-			     | CWColormap,
-			     &xattr);
+	if (WMwindow) {
+		/* Capture window hints so that they survive the recreation */
+		hints = XGetWMHints(SDL_Display, WMwindow);
+		XDestroyWindow(SDL_Display, WMwindow);
+	} else {
+		hints = NULL; /* Will allocate them later on. */
+	}
 
-    XSelectInput(SDL_Display, FSwindow, StructureNotifyMask);
-
-    /* Tell KDE to keep the fullscreen window on top */
-    {
-	XEvent ev;
-	long mask;
-
-	SDL_memset(&ev, 0, sizeof(ev));
-	ev.xclient.type = ClientMessage;
-	ev.xclient.window = SDL_Root;
-	ev.xclient.message_type = XInternAtom(SDL_Display,
-					      "KWM_KEEP_ON_TOP", False);
-	ev.xclient.format = 32;
-	ev.xclient.data.l[0] = FSwindow;
-	ev.xclient.data.l[1] = CurrentTime;
-	mask = SubstructureRedirectMask;
-	XSendEvent(SDL_Display, SDL_Root, False, mask, &ev);
-    }
-
-    hints = NULL;
-    if(WMwindow) {
-	/* All window attributes must survive the recreation */
-	hints = XGetWMHints(SDL_Display, WMwindow);
-	XDestroyWindow(SDL_Display, WMwindow);
-    }
-
-    /* Create the window for windowed management */
-    /* (reusing the xattr structure above) */
+	/* Create the window for windowed management */
     WMwindow = XCreateWindow(SDL_Display, SDL_Root,
                              x, y, 32, 32, 0,
 			     this->hidden->depth, InputOutput, SDL_Visual,
 			     CWBackPixel | CWBorderPixel | CWColormap,
 			     &xattr);
 
-    /* Set the input hints so we get keyboard input */
-    if(!hints) {
-	hints = XAllocWMHints();
-	hints->input = True;
-	hints->flags = InputHint;
-    }
-    XSetWMHints(SDL_Display, WMwindow, hints);
-    XFree(hints);
     X11_SetCaptionNoLock(this, this->wm_title, this->wm_icon);
 
     app_event_mask = FocusChangeMask | KeyPressMask | KeyReleaseMask
 	| PropertyChangeMask | StructureNotifyMask | KeymapStateMask;
     XSelectInput(SDL_Display, WMwindow, app_event_mask);
 
-    /* Set the class hints so we can get an icon (AfterStep) */
-    get_classname(classname, sizeof(classname));
-    {
-	XClassHint *classhints;
-	classhints = XAllocClassHint();
-	if(classhints != NULL) {
-	    classhints->res_name = classname;
-	    classhints->res_class = classname;
-	    XSetClassHint(SDL_Display, WMwindow, classhints);
-	    XFree(classhints);
-	}
+	/* Set the input hints so we get keyboard input, if this is a brand new window */
+	if (hints == NULL) {
+		hints = XAllocWMHints();
+		hints->input = True;
+		hints->flags = InputHint;
     }
+
+    /* Set the class hints so we can get an icon (AfterStep) */
+	classhints = XAllocClassHint();
+	if (classhints != NULL) {
+		get_classname(classname, sizeof(classname));
+		classhints->res_name = classname;
+		classhints->res_class = classname;
+	}
+
+	XSetWMProperties(SDL_Display, WMwindow, NULL, NULL, NULL, 0, NULL, hints, classhints);
+
+	if (hints) {
+		XFree(hints);
+	}
+	if (classhints) {
+		XFree(classhints);
+	}
+
+	/* Set the X11 window pid */
+	unsigned long pid = getpid();
+	XChangeProperty(SDL_Display, WMwindow, atom(_NET_WM_PID), XA_CARDINAL, 32,
+		PropModeReplace, (unsigned char *)&pid, 1);
+
+	/* Allow the window to be deleted or pinged by the window manager */
+	Atom protocols[2];
+	protocols[0] = atom(WM_DELETE_WINDOW);
+	protocols[1] = atom(_NET_WM_PING);
+	XSetWMProtocols(SDL_Display, WMwindow, protocols, 2);
 
 	/* Setup the communication with the IM server */
 	/* create_aux_windows may be called several times against the same
@@ -568,9 +553,6 @@ static void create_aux_windows(_THIS)
 		}
 	}
 	#endif
-
-	/* Allow the window to be deleted by the window manager */
-	XSetWMProtocols(SDL_Display, WMwindow, &atom(WM_DELETE_WINDOW), 1);
 }
 
 static int X11_VideoInit(_THIS, SDL_PixelFormat *vformat)
@@ -800,20 +782,24 @@ static void X11_SetSizeHints(_THIS, int w, int h, Uint32 flags)
 		if (!(flags & SDL_RESIZABLE)) {
 			hints->min_width = hints->max_width = w;
 			hints->min_height = hints->max_height = h;
-			hints->flags = PMaxSize | PMinSize;
+			hints->flags |= PMinSize;
 		}
 		if ( flags & SDL_FULLSCREEN ) {
 			hints->x = 0;
 			hints->y = 0;
 			hints->flags |= USPosition;
-		} else
-		/* Center it, if desired */
-		if ( X11_WindowPosition(this, &hints->x, &hints->y, w, h) ) {
-			hints->flags |= USPosition;
-			XMoveWindow(SDL_Display, WMwindow, hints->x, hints->y);
+		} else {
+			if (!(flags & SDL_RESIZABLE)) {
+				hints->flags |= PMaxSize;
+			}
+			/* Center it, if desired */
+			if ( X11_WindowPosition(this, &hints->x, &hints->y, w, h) ) {
+				hints->flags |= USPosition;
+				XMoveWindow(SDL_Display, WMwindow, hints->x, hints->y);
 
-			/* Flush the resize event so we don't catch it later */
-			XSync(SDL_Display, True);
+				/* Flush the resize event so we don't catch it later */
+				XSync(SDL_Display, True);
+			}
 		}
 		XSetWMNormalHints(SDL_Display, WMwindow, hints);
 		XFree(hints);
@@ -918,7 +904,6 @@ static int X11_CreateWindow(_THIS, SDL_Surface *screen,
 	/* If a window is already present, destroy it and start fresh */
 	if ( SDL_Window ) {
 		X11_DestroyWindow(this, screen);
-		switch_waiting = 0; /* Prevent jump back to now-meaningless state. */
 	}
 
 	/* See if we have been given a window id */
@@ -1032,18 +1017,9 @@ static int X11_CreateWindow(_THIS, SDL_Surface *screen,
 	if ( vis_change )
 	    create_aux_windows(this);
 
-	if(screen->flags & SDL_HWPALETTE) {
-	    /* Since the full-screen window might have got a nonzero background
-	       colour (0 is white on some displays), we should reset the
-	       background to 0 here since that is what the user expects
-	       with a private colormap */
-	    XSetWindowBackground(SDL_Display, FSwindow, 0);
-	    XClearWindow(SDL_Display, FSwindow);
-	}
-
 	/* resize the (possibly new) window manager window */
 	if( !SDL_windowid ) {
-	        X11_SetSizeHints(this, w, h, flags);
+		X11_SetSizeHints(this, w, h, flags);
 		window_w = w;
 		window_h = h;
 		XResizeWindow(SDL_Display, WMwindow, w, h);
@@ -1106,7 +1082,6 @@ static int X11_CreateWindow(_THIS, SDL_Surface *screen,
 	if ( ! (flags & (SDL_OPENGL|SDL_OPENGLES)) ) {
 		XSetWindowColormap(SDL_Display, SDL_Window, SDL_XColorMap);
 		if( !SDL_windowid ) {
-		    XSetWindowColormap(SDL_Display, FSwindow, SDL_XColorMap);
 		    XSetWindowColormap(SDL_Display, WMwindow, SDL_XColorMap);
 		}
 	}
@@ -1129,15 +1104,16 @@ static int X11_CreateWindow(_THIS, SDL_Surface *screen,
 
 	/* Map them both and go fullscreen, if requested */
 	if ( ! SDL_windowid ) {
-		XMapWindow(SDL_Display, SDL_Window);
-		XMapWindow(SDL_Display, WMwindow);
-		X11_WaitMapped(this, WMwindow);
 		if ( flags & SDL_FULLSCREEN ) {
 			screen->flags |= SDL_FULLSCREEN;
 			X11_EnterFullScreen(this);
 		} else {
 			screen->flags &= ~SDL_FULLSCREEN;
 		}
+		XMapWindow(SDL_Display, SDL_Window);
+		XMapWindow(SDL_Display, WMwindow);
+		X11_WaitMapped(this, WMwindow);
+
 	}
 	
 	return(0);
@@ -1282,10 +1258,12 @@ static int X11_ToggleFullScreen(_THIS, int on)
 	}
 	if ( on ) {
 		this->screen->flags |= SDL_FULLSCREEN;
+		X11_SetSizeHints(this, this->screen->w, this->screen->h, this->screen->flags);
 		X11_EnterFullScreen(this);
 	} else {
 		this->screen->flags &= ~SDL_FULLSCREEN;
 		X11_LeaveFullScreen(this);
+		X11_SetSizeHints(this, this->screen->w, this->screen->h, this->screen->flags);
 	}
 	X11_RefreshDisplay(this);
 	if ( event_thread ) {

@@ -465,9 +465,6 @@ printf("FocusIn!\n");
 			XSetICFocus(SDL_IC);
 		}
 #endif
-		/* Queue entry into fullscreen mode */
-		switch_waiting = 0x01 | SDL_FULLSCREEN;
-		switch_time = SDL_GetTicks() + 1500;
 	    }
 	    break;
 
@@ -483,9 +480,6 @@ printf("FocusOut!\n");
 			XUnsetICFocus(SDL_IC);
 		}
 #endif
-		/* Queue leaving fullscreen mode */
-		switch_waiting = 0x01;
-		switch_time = SDL_GetTicks() + 200;
 	    }
 	    break;
 
@@ -844,12 +838,74 @@ printf("ConfigureNotify! (resize: %dx%d)\n", xevent.xconfigure.width, xevent.xco
 		}
 		break;
 
+	    /* Has one of our window properties being changed? */
+	    case PropertyNotify:
+#ifdef DEBUG_XEVENTS
+printf("PropertyNotify atom = %d)\n", xevent.xproperty.atom);
+#endif
+		if ( xevent.xproperty.window == WMwindow &&
+			 xevent.xproperty.state == PropertyNewValue &&
+			 xevent.xproperty.atom == atom(WM_STATE)) {
+			Atom type;
+			int format;
+			unsigned long nitems, after;
+			unsigned char * data;
+			int e = XGetWindowProperty(SDL_Display, WMwindow, atom(WM_STATE),
+				0, 1, False, atom(WM_STATE),
+				&type, &format, &nitems, &after, &data);
+			if ( e == Success && type == atom(WM_STATE) &&
+				 format == 32 && nitems >= 1 ) {
+				unsigned long state = *(unsigned long*)data;
+				switch (state) {
+				case NormalState:
+					/* If we're not active, make ourselves active */
+					if ( !(SDL_GetAppState() & SDL_APPACTIVE) ) {
+						/* Send an internal activate event */
+						posted = SDL_PrivateAppActive(1, SDL_APPACTIVE);
+
+						/* Now that we're active, swap the gamma back */
+						X11_SwapVidModeGamma(this);
+					}
+				break;
+				case IconicState:
+					/* If we're active, make ourselves inactive */
+					if ( SDL_GetAppState() & SDL_APPACTIVE ) {
+						/* Swap out the gamma before we go inactive */
+						X11_SwapVidModeGamma(this);
+
+						/* Send an internal deactivate event */
+						posted = SDL_PrivateAppActive(0, SDL_APPACTIVE);
+					}
+				break;
+				}
+			}
+			if ( e == Success ) XFree(data);
+		} else
+		if ( SDL_ProcessEvents[SDL_SYSWMEVENT] == SDL_ENABLE ) {
+			SDL_SysWMmsg wmmsg;
+
+			SDL_VERSION(&wmmsg.version);
+			wmmsg.subsystem = SDL_SYSWM_X11;
+			wmmsg.event.xevent = xevent;
+			posted = SDL_PrivateSysWMEvent(&wmmsg);
+		}
+	    break;
+
 	    /* Have we been requested to quit (or another client message?) */
 	    case ClientMessage: {
 		if ( (xevent.xclient.format == 32) &&
 		     (xevent.xclient.data.l[0] == atom(WM_DELETE_WINDOW)) )
 		{
 			posted = SDL_PrivateQuit();
+		} else
+		if ( (xevent.xclient.format == 32) &&
+		     (xevent.xclient.data.l[0] == atom(_NET_WM_PING)) )
+		{
+			/* Window manager wants to know if we are still alive. */
+			xevent.xclient.window = DefaultRootWindow(SDL_Display);
+			XSendEvent(SDL_Display, xevent.xclient.window, False,
+				SubstructureRedirectMask | SubstructureNotifyMask, &xevent);
+			posted = 1;
 		} else
 		if ( SDL_ProcessEvents[SDL_SYSWMEVENT] == SDL_ENABLE ) {
 			SDL_SysWMmsg wmmsg;
@@ -938,38 +994,6 @@ void X11_PumpEvents(_THIS)
 	while ( X11_Pending(SDL_Display) ) {
 		X11_DispatchEvent(this);
 		++pending;
-	}
-	if ( switch_waiting ) {
-		Uint32 now;
-
-		now  = SDL_GetTicks();
-		if ( pending || !SDL_VideoSurface ) {
-			/* Try again later... */
-			if ( switch_waiting & SDL_FULLSCREEN ) {
-				switch_time = now + 1500;
-			} else {
-				switch_time = now + 200;
-			}
-		} else if ( (int)(switch_time-now) <= 0 ) {
-			Uint32 go_fullscreen;
-
-			go_fullscreen = switch_waiting & SDL_FULLSCREEN;
-			switch_waiting = 0;
-			if ( SDL_VideoSurface->flags & SDL_FULLSCREEN ) {
-				if ( go_fullscreen ) {
-					X11_EnterFullScreen(this);
-				} else {
-					X11_LeaveFullScreen(this);
-				}
-			}
-			/* Handle focus in/out when grabbed */
-			if ( go_fullscreen ) {
-				X11_GrabInputNoLock(this, this->input_grab);
-			} else {
-				X11_GrabInputNoLock(this, SDL_GRAB_OFF);
-			}
-			X11_CheckMouseModeNoLock(this);
-		}
 	}
 }
 
