@@ -318,6 +318,8 @@ SDL_GrabMode X11_GrabInputNoLock(_THIS, SDL_GrabMode mode)
 {
 	int result;
 
+	mode &= ~SDL_GRAB_FULLSCREEN; /* Don't do fullscreen X11 grabs by default. */
+
 	if ( this->screen == NULL ) {
 		return(SDL_GRAB_OFF);
 	}
