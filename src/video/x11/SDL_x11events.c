@@ -58,6 +58,13 @@ static SDLKey ODD_keymap[256];
 static SDLKey MISC_keymap[256];
 SDLKey X11_TranslateKeycode(Display *display, KeyCode kc);
 
+/* Support for an external event filter that works on raw X11 events. */
+static SDL_X11_EventFilter event_filter;
+
+void SDL_X11_SetEventFilter(SDL_X11_EventFilter filter)
+{
+	event_filter = filter;
+}
 
 #ifdef X_HAVE_UTF8_STRING
 Uint32 Utf8ToUcs4(const Uint8 *utf8)
@@ -575,6 +582,12 @@ static int X11_DispatchEvent(_THIS)
 		return 0;
 	}
 #endif
+
+	/* If there's an installed X11 event filter and it says "skip it", well,
+	   skip it. */
+	if ( event_filter != NULL && event_filter(&xevent) == 0 ) {
+		return 0;
+	}
 
 	posted = 0;
 	switch (xevent.type) {

@@ -113,6 +113,10 @@ typedef struct SDL_SysWMinfo {
 	} info;
 } SDL_SysWMinfo;
 
+/** Ability to add a filter that processes raw X11 events. */
+typedef int (*SDL_X11_EventFilter)(const XEvent *event);
+extern DECLSPEC void SDL_X11_SetEventFilter(SDL_X11_EventFilter filter);
+
 #elif defined(SDL_VIDEO_DRIVER_NANOX)
 #include <microwin/nano-X.h>
 
