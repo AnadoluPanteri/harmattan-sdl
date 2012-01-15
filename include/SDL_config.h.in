@@ -151,6 +151,7 @@
 #undef SDL_EVENTS_DISABLED
 #undef SDL_FILE_DISABLED
 #undef SDL_JOYSTICK_DISABLED
+#undef SDL_HAPTIC_DISABLED
 #undef SDL_LOADSO_DISABLED
 #undef SDL_THREADS_DISABLED
 #undef SDL_TIMERS_DISABLED
@@ -219,6 +220,9 @@
 #undef SDL_JOYSTICK_WINMM
 #undef SDL_JOYSTICK_USBHID
 #undef SDL_JOYSTICK_USBHID_MACHINE_JOYSTICK_H
+
+/* Enable haptic subsystem drivers */
+#undef SDL_HAPTIC_DUMMY
 
 /* Enable various shared object loading systems */
 #undef SDL_LOADSO_BEOS

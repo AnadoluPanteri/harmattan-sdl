@@ -130,6 +130,22 @@ int SDL_InitSubSystem(Uint32 flags)
 	}
 #endif
 
+#if !SDL_HAPTIC_DISABLED
+	/* Initialize the joystick subsystem */
+	if ( (flags & SDL_INIT_HAPTIC) &&
+	     !(SDL_initialized & SDL_INIT_HAPTIC) ) {
+		if ( SDL_HapticInit() < 0 ) {
+			return(-1);
+		}
+		SDL_initialized |= SDL_INIT_HAPTIC;
+	}
+#else
+	if ( flags & SDL_INIT_HAPTIC ) {
+		SDL_SetError("SDL not built with haptic (force feedback) support");
+		return(-1);
+	}
+#endif
+
 #if !SDL_CDROM_DISABLED
 	/* Initialize the CD-ROM subsystem */
 	if ( (flags & SDL_INIT_CDROM) && !(SDL_initialized & SDL_INIT_CDROM) ) {
@@ -183,6 +199,12 @@ void SDL_QuitSubSystem(Uint32 flags)
 	if ( (flags & SDL_initialized & SDL_INIT_JOYSTICK) ) {
 		SDL_JoystickQuit();
 		SDL_initialized &= ~SDL_INIT_JOYSTICK;
+	}
+#endif
+#if !SDL_HAPTIC_DISABLED
+	if ( (flags & SDL_initialized & SDL_INIT_HAPTIC) ) {
+		SDL_HapticQuit();
+		SDL_initialized &= ~SDL_INIT_HAPTIC;
 	}
 #endif
 #if !SDL_TIMERS_DISABLED

@@ -273,6 +273,14 @@ fi
 AC_ARG_ENABLE(sensorfw,
 AC_HELP_STRING([--enable-sensorfw], [Enable the use of the Meego sensor framework to show various sensors as joystick devices [[default=yes]]]),
               , enable_sensorfw=yes)
+AC_ARG_ENABLE(haptic,
+AC_HELP_STRING([--enable-haptic], [Enable the haptic (force feedback) subsystem [[default=yes]]]),
+              , enable_haptic=yes)
+if test x$enable_haptic != xyes; then
+    AC_DEFINE(SDL_HAPTIC_DISABLED)
+else
+    SOURCES="$SOURCES $srcdir/src/haptic/*.c"
+fi
 AC_ARG_ENABLE(cdrom,
 AC_HELP_STRING([--enable-cdrom], [Enable the cdrom subsystem [[default=yes]]]),
               , enable_cdrom=yes)
@@ -2893,6 +2901,13 @@ if test x$enable_joystick = xyes; then
     # Wants joystick subsystem, but doesn't have a platform-specific backend...
     AC_DEFINE(SDL_JOYSTICK_DUMMY)
     SOURCES="$SOURCES $srcdir/src/joystick/dummy/*.c"
+  fi
+fi
+if test x$enable_haptic = xyes; then
+  if test x$have_haptic != xyes; then
+    # Wants haptic subsystem, but doesn't have a platform-specific backend...
+    AC_DEFINE(SDL_HAPTIC_DUMMY)
+    SOURCES="$SOURCES $srcdir/src/haptic/dummy/*.c"
   fi
 fi
 if test x$have_cdrom != xyes; then
