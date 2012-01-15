@@ -54,6 +54,7 @@ typedef struct SDL_Cursor {
  * be tested using the SDL_BUTTON(X) macros, and x and y are set to the
  * current mouse cursor position.  You can pass NULL for either x or y.
  */
+extern DECLSPEC Uint8 SDLCALL SDL_GetMultiMouseState(int which, int *x, int *y);
 extern DECLSPEC Uint8 SDLCALL SDL_GetMouseState(int *x, int *y);
 
 /**
@@ -62,6 +63,7 @@ extern DECLSPEC Uint8 SDLCALL SDL_GetMouseState(int *x, int *y);
  * be tested using the SDL_BUTTON(X) macros, and x and y are set to the
  * mouse deltas since the last call to SDL_GetRelativeMouseState().
  */
+extern DECLSPEC Uint8 SDLCALL SDL_GetRelativeMultiMouseState(int which, int *x, int *y);
 extern DECLSPEC Uint8 SDLCALL SDL_GetRelativeMouseState(int *x, int *y);
 
 /**
@@ -133,6 +135,9 @@ extern DECLSPEC int SDLCALL SDL_ShowCursor(int toggle);
 #define SDL_BUTTON_X1MASK	SDL_BUTTON(SDL_BUTTON_X1)
 #define SDL_BUTTON_X2MASK	SDL_BUTTON(SDL_BUTTON_X2)
 /*@}*/
+
+/** Defines the maximum of number of mice */
+#define SDL_MAXMOUSE        10
 
 /* Ends C function definitions when using C++ */
 #ifdef __cplusplus
