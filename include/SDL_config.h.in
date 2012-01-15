@@ -223,6 +223,7 @@
 
 /* Enable haptic subsystem drivers */
 #undef SDL_HAPTIC_DUMMY
+#undef SDL_HAPTIC_IMMERSION
 
 /* Enable various shared object loading systems */
 #undef SDL_LOADSO_BEOS
