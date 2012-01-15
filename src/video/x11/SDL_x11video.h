@@ -49,6 +49,13 @@
 
 #include "SDL_x11dyn.h"
 
+enum {
+#define SDL_X11_ATOM(id, name) id,
+#include "SDL_x11atoms.h"
+#undef SDL_X11_ATOM
+ATOM_COUNT
+};
+
 /* Hidden "this" pointer for the video functions */
 #define _THIS	SDL_VideoDevice *this
 
@@ -61,7 +68,7 @@ struct SDL_PrivateVideoData {
     Window WMwindow;		/* Input window, managed by window manager */
     Window FSwindow;		/* Fullscreen window, completely unmanaged */
     Window SDL_Window;		/* Shared by both displays (no X security?) */
-    Atom WM_DELETE_WINDOW;	/* "close-window" protocol atom */
+    Atom atoms[ATOM_COUNT];	/* X11 protocol atoms */
     WMcursor *BlankCursor;	/* The invisible cursor */
     XIM X11_IM;		/* Used to communicate with the input method (IM) server */
     XIC X11_IC;		/* Used for retaining the state, properties, and semantics of communication with                                                  the input method (IM) server */
@@ -166,7 +173,6 @@ struct SDL_PrivateVideoData {
 #define WMwindow		(this->hidden->WMwindow)
 #define FSwindow		(this->hidden->FSwindow)
 #define SDL_Window		(this->hidden->SDL_Window)
-#define WM_DELETE_WINDOW	(this->hidden->WM_DELETE_WINDOW)
 #define SDL_BlankCursor		(this->hidden->BlankCursor)
 #define SDL_IM			(this->hidden->X11_IM)
 #define SDL_IC			(this->hidden->X11_IC)
@@ -205,6 +211,8 @@ struct SDL_PrivateVideoData {
 #define gamma_changed		(this->hidden->gamma_changed)
 #define SDL_iconcolors		(this->hidden->iconcolors)
 #define allow_screensaver	(this->hidden->allow_screensaver)
+
+#define atom(i)             (this->hidden->atoms[i])
 
 /* Some versions of XFree86 have bugs - detect if this is one of them */
 #define BUGGY_XFREE86(condition, buggy_version) \

@@ -246,17 +246,6 @@ void X11_SetCaptionNoLock(_THIS, const char *title, const char *icon)
 	XTextProperty titleprop, iconprop;
 	Status status;
 
-#ifdef X_HAVE_UTF8_STRING
-	Atom _NET_WM_NAME = 0;
-	Atom _NET_WM_ICON_NAME = 0;
-
-	/* Look up some useful Atoms */
-	if (SDL_X11_HAVE_UTF8) {
-		_NET_WM_NAME = XInternAtom(SDL_Display, "_NET_WM_NAME", False);
-		_NET_WM_ICON_NAME = XInternAtom(SDL_Display, "_NET_WM_ICON_NAME", False);
-	}
-#endif
-
 	if ( title != NULL ) {
 		char *title_locale = SDL_iconv_utf8_locale(title);
 		if ( !title_locale ) {
@@ -274,7 +263,7 @@ void X11_SetCaptionNoLock(_THIS, const char *title, const char *icon)
 			status = Xutf8TextListToTextProperty(SDL_Display,
 					(char **)&title, 1, XUTF8StringStyle, &titleprop);
 			if ( status == Success ) {
-				XSetTextProperty(SDL_Display, WMwindow, &titleprop, _NET_WM_NAME);
+				XSetTextProperty(SDL_Display, WMwindow, &titleprop, atom(_NET_WM_NAME));
 				XFree(titleprop.value);
 			}
 		}
@@ -297,7 +286,7 @@ void X11_SetCaptionNoLock(_THIS, const char *title, const char *icon)
 			status = Xutf8TextListToTextProperty(SDL_Display,
 					(char **)&icon, 1, XUTF8StringStyle, &iconprop);
 			if ( status == Success ) {
-				XSetTextProperty(SDL_Display, WMwindow, &iconprop, _NET_WM_ICON_NAME);
+				XSetTextProperty(SDL_Display, WMwindow, &iconprop, atom(_NET_WM_ICON_NAME));
 				XFree(iconprop.value);
 			}
 		}

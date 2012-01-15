@@ -839,7 +839,7 @@ printf("ConfigureNotify! (resize: %dx%d)\n", xevent.xconfigure.width, xevent.xco
 	    /* Have we been requested to quit (or another client message?) */
 	    case ClientMessage: {
 		if ( (xevent.xclient.format == 32) &&
-		     (xevent.xclient.data.l[0] == WM_DELETE_WINDOW) )
+		     (xevent.xclient.data.l[0] == atom(WM_DELETE_WINDOW)) )
 		{
 			posted = SDL_PrivateQuit();
 		} else

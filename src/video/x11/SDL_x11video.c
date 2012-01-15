@@ -58,6 +58,12 @@
 #include <locale.h>
 #endif
 
+static const char * atom_names[ATOM_COUNT] = {
+#define SDL_X11_ATOM(id, name) name,
+#include "SDL_x11atoms.h"
+#undef SDL_X11_ATOM
+};
+
 /* Initialization/Query functions */
 static int X11_VideoInit(_THIS, SDL_PixelFormat *vformat);
 static SDL_Surface *X11_SetVideoMode(_THIS, SDL_Surface *current, int width, int height, int bpp, Uint32 flags);
@@ -325,9 +331,6 @@ static void create_aux_windows(_THIS)
     unsigned long app_event_mask;
     int def_vis = (SDL_Visual == DefaultVisual(SDL_Display, SDL_Screen));
 
-    /* Look up some useful Atoms */
-    WM_DELETE_WINDOW = XInternAtom(SDL_Display, "WM_DELETE_WINDOW", False);
-
     /* Don't create any extra windows if we are being managed */
     if ( SDL_windowid ) {
 	FSwindow = 0;
@@ -553,7 +556,7 @@ static void create_aux_windows(_THIS)
 	#endif
 
 	/* Allow the window to be deleted by the window manager */
-	XSetWMProtocols(SDL_Display, WMwindow, &WM_DELETE_WINDOW, 1);
+	XSetWMProtocols(SDL_Display, WMwindow, &atom(WM_DELETE_WINDOW), 1);
 }
 
 static int X11_VideoInit(_THIS, SDL_PixelFormat *vformat)
@@ -617,6 +620,9 @@ static int X11_VideoInit(_THIS, SDL_PixelFormat *vformat)
 
 	/* use default screen (from $DISPLAY) */
 	SDL_Screen = DefaultScreen(SDL_Display);
+
+    /* Look up some useful Atoms */
+    XInternAtoms(SDL_Display, (char**) atom_names, ATOM_COUNT, False, this->hidden->atoms);
 
 #ifndef NO_SHARED_MEMORY
 	/* Check for MIT shared memory extension */
