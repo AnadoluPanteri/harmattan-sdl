@@ -49,6 +49,10 @@
 #if SDL_VIDEO_DRIVER_X11_XINPUT2
 #include <X11/extensions/XInput2.h>
 #endif
+#if SDL_VIDEO_DRIVER_X11_DRI2
+#include "../Xext/extensions/DRI2.h"
+#define DRI2_BUFFER_CACHE_SIZE 5
+#endif
 
 #include "SDL_x11dyn.h"
 
@@ -148,6 +152,18 @@ struct SDL_PrivateVideoData {
 #if SDL_VIDEO_DRIVER_X11_XME /* XiG XME fullscreen */
     XiGMiscResolutionInfo saved_res;
 #endif
+#if SDL_VIDEO_DRIVER_X11_DRI2
+    int dri2_event_base, dri2_error_base;
+    struct {
+        int valid;
+        DRI2Buffer buf;
+        void *mem;
+        void *dev_mem;
+    } dri2_cache[DRI2_BUFFER_CACHE_SIZE];
+    int dri2_buf; /* The current framebuffer, as an index to dri2_cache. */
+    int dri2_accel;
+    Uint32 dri2_last_swap;
+#endif
 
     int use_xinerama;
     int use_xrandr;
@@ -208,6 +224,12 @@ struct SDL_PrivateVideoData {
 #define xi_opcode			(this->hidden->xi_opcode)
 #define xi_master			(this->hidden->xi_master)
 #define have_touch			(this->hidden->have_touch)
+#define dri2_event_base		(this->hidden->dri2_event_base)
+#define dri2_error_base		(this->hidden->dri2_error_base)
+#define dri2_cache		(this->hidden->dri2_cache)
+#define dri2_buf		(this->hidden->dri2_buf)
+#define dri2_accel		(this->hidden->dri2_accel)
+#define dri2_last_swap		(this->hidden->dri2_last_swap)
 #define use_xinerama		(this->hidden->use_xinerama)
 #define use_vidmode		(this->hidden->use_vidmode)
 #define use_xrandr		(this->hidden->use_xrandr)
