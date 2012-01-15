@@ -817,6 +817,8 @@ printf("MapNotify!\n");
 #ifdef DEBUG_XEVENTS
 printf("ConfigureNotify! (resize: %dx%d)\n", xevent.xconfigure.width, xevent.xconfigure.height);
 #endif
+		window_x = xevent.xconfigure.x;
+		window_y = xevent.xconfigure.y;
 		if ( SDL_VideoSurface ) {
 		    if ((xevent.xconfigure.width != SDL_VideoSurface->w) ||
 		        (xevent.xconfigure.height != SDL_VideoSurface->h)) {
@@ -835,6 +837,12 @@ printf("ConfigureNotify! (resize: %dx%d)\n", xevent.xconfigure.width, xevent.xco
 		}
 	    }
 	    break;
+
+		case ReparentNotify: {
+		window_x = xevent.xreparent.x;
+		window_y = xevent.xreparent.y;
+		}
+		break;
 
 	    /* Have we been requested to quit (or another client message?) */
 	    case ClientMessage: {
