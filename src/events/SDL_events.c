@@ -262,6 +262,16 @@ int SDL_StartEventLoop(Uint32 flags)
 	SDL_eventstate &= ~(0x00000001 << SDL_SYSWMEVENT);
 	SDL_ProcessEvents[SDL_SYSWMEVENT] = SDL_IGNORE;
 
+#if !SDL_JOYSTICK_DISABLED
+	/* Also disable joystick events by default. */
+	SDL_eventstate &= ~SDL_JOYEVENTMASK;
+	SDL_ProcessEvents[SDL_JOYAXISMOTION] = SDL_IGNORE;
+	SDL_ProcessEvents[SDL_JOYBALLMOTION] = SDL_IGNORE;
+	SDL_ProcessEvents[SDL_JOYHATMOTION] = SDL_IGNORE;
+	SDL_ProcessEvents[SDL_JOYBUTTONDOWN] = SDL_IGNORE;
+	SDL_ProcessEvents[SDL_JOYBUTTONUP] = SDL_IGNORE;
+#endif
+
 #ifdef SDL_EVENT_WAKEUP_PIPE
 	retcode = pipe(wakeup_pipe);
 	if (retcode != 0) {

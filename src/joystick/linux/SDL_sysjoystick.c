@@ -39,6 +39,10 @@
 #include "../SDL_sysjoystick.h"
 #include "../SDL_joystick_c.h"
 
+#if SDL_JOYSTICK_LINUX_SENSORFW
+#include "SDL_sensorfw.h"
+#endif
+
 /* Special joystick configurations */
 static struct {
 	const char *name;
@@ -415,7 +419,12 @@ int SDL_SYS_JoystickInit(void)
 	struct stat sb;
 	int n, duplicate;
 
+#if SDL_JOYSTICK_LINUX_SENSORFW
+	SDL_SFW_Init();
+	numjoysticks = sdl_sfw_num_joysticks;
+#else
 	numjoysticks = 0;
+#endif
 
 	/* First see if the user specified a joystick to use */
 	if ( SDL_getenv("SDL_JOYSTICK_DEVICE") != NULL ) {
@@ -502,6 +511,12 @@ int SDL_SYS_JoystickInit(void)
 /* Function to get the device-dependent name of a joystick */
 const char *SDL_SYS_JoystickName(int index)
 {
+#if SDL_JOYSTICK_LINUX_SENSORFW
+	if (index < sdl_sfw_num_joysticks) {
+		return SDL_SFW_JoystickName(index);
+	}
+#endif
+
 	int fd;
 	static char namebuf[128];
 	char *name;
@@ -781,6 +796,12 @@ static void ConfigLogicalJoystick(SDL_Joystick *joystick)
  */
 int SDL_SYS_JoystickOpen(SDL_Joystick *joystick)
 {
+#if SDL_JOYSTICK_LINUX_SENSORFW
+	if (joystick->index < sdl_sfw_num_joysticks) {
+		return SDL_SFW_JoystickOpen(joystick);
+	}
+#endif
+
 	int fd;
 	SDL_logical_joydecl(int realindex);
 	SDL_logical_joydecl(SDL_Joystick *realjoy = NULL);
@@ -1139,7 +1160,14 @@ static __inline__ void EV_HandleEvents(SDL_Joystick *joystick)
 void SDL_SYS_JoystickUpdate(SDL_Joystick *joystick)
 {
 	int i;
-	
+
+#if SDL_JOYSTICK_LINUX_SENSORFW
+	if (joystick->index < sdl_sfw_num_joysticks) {
+		SDL_SFW_JoystickUpdate(joystick);
+		return;
+	}
+#endif
+
 #if SDL_INPUT_LINUXEV
 	if ( joystick->hwdata->is_hid )
 		EV_HandleEvents(joystick);
@@ -1164,6 +1192,13 @@ void SDL_SYS_JoystickUpdate(SDL_Joystick *joystick)
 /* Function to close a joystick after use */
 void SDL_SYS_JoystickClose(SDL_Joystick *joystick)
 {
+#if SDL_JOYSTICK_LINUX_SENSORFW
+	if (joystick->index < sdl_sfw_num_joysticks) {
+		SDL_SFW_JoystickClose(joystick);
+		return;
+	}
+#endif
+
 #ifndef NO_LOGICAL_JOYSTICKS
 	register int i;
 	if (SDL_joylist[joystick->index].fname == NULL) {
@@ -1197,6 +1232,10 @@ void SDL_SYS_JoystickQuit(void)
 		SDL_free(SDL_joylist[i].fname);
 		SDL_joylist[i].fname = NULL;
 	}
+
+#if SDL_JOYSTICK_LINUX_SENSORFW
+	SDL_SFW_Quit();
+#endif
 }
 
 #endif /* SDL_JOYSTICK_LINUX */

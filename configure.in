@@ -270,6 +270,9 @@ if test x$enable_joystick != xyes; then
 else
     SOURCES="$SOURCES $srcdir/src/joystick/*.c"
 fi
+AC_ARG_ENABLE(sensorfw,
+AC_HELP_STRING([--enable-sensorfw], [Enable the use of the Meego sensor framework to show various sensors as joystick devices [[default=yes]]]),
+              , enable_sensorfw=yes)
 AC_ARG_ENABLE(cdrom,
 AC_HELP_STRING([--enable-cdrom], [Enable the cdrom subsystem [[default=yes]]]),
               , enable_cdrom=yes)
@@ -2440,6 +2443,23 @@ case "$host" in
                 AC_DEFINE(SDL_JOYSTICK_LINUX)
                 SOURCES="$SOURCES $srcdir/src/joystick/linux/*.c"
                 have_joystick=yes
+				if test x$enable_sensorfw = xyes; then
+					AC_PATH_PROG(PKG_CONFIG, pkg-config, no)
+					AC_MSG_CHECKING(for D-Bus support)
+					if test x$PKG_CONFIG != xno; then
+						if $PKG_CONFIG --atleast-pkgconfig-version 0.7 && $PKG_CONFIG --atleast-version 1.0 dbus-1; then
+						    DBUS_CFLAGS=`$PKG_CONFIG --cflags dbus-1`
+						    DBUS_LIBS=`$PKG_CONFIG --libs dbus-1`
+						    have_dbus=yes
+						fi
+					fi
+					AC_MSG_RESULT($have_dbus)
+				fi
+				if test x$have_dbus = xyes; then
+					EXTRA_CFLAGS="$EXTRA_CFLAGS $DBUS_CFLAGS"
+					EXTRA_LDFLAGS="$EXTRA_LDFLAGS $DBUS_LIBS"
+				    AC_DEFINE(SDL_JOYSTICK_LINUX_SENSORFW)
+				fi
             ;;
           esac
         fi
