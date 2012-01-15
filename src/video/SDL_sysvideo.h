@@ -273,6 +273,8 @@ struct SDL_VideoDevice {
 
 	/* Driver information flags */
 	int handles_any_size;	/* Driver handles any size video mode */
+	int can_select;			/* This driver supports a select() event loop. */
+	int monitor_fd;			/* FD to monitor if select event loop is available. */
 
 	/* * * */
 	/* Data used by the GL drivers */

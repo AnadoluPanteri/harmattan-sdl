@@ -75,6 +75,8 @@
 #undef HAVE_MATH_H
 #undef HAVE_ICONV_H
 #undef HAVE_SIGNAL_H
+#undef HAVE_UNISTD_H
+#undef HAVE_FCNTL_H
 #undef HAVE_ALTIVEC_H
 
 /* C library functions */

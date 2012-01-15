@@ -59,6 +59,14 @@ static struct {
 static SDL_Thread *SDL_EventThread = NULL;	/* Thread handle */
 static Uint32 event_thread;			/* The event thread id */
 
+#if defined(HAVE_UNISTD_H) && defined(HAVE_FCNTL_H)
+#define SDL_EVENT_WAKEUP_PIPE 1
+#include <unistd.h> /* for pipe(),select() */
+#include <fcntl.h>  /* for fcntl() */
+
+static int wakeup_pipe[2] = { -1, -1 };
+#endif
+
 void SDL_Lock_EventThread(void)
 {
 	if ( SDL_EventThread && (SDL_ThreadID() != event_thread) ) {
@@ -188,6 +196,12 @@ static void SDL_StopEventThread(void)
 {
 	SDL_EventQ.active = 0;
 	if ( SDL_EventThread ) {
+#ifdef SDL_EVENT_WAKEUP_PIPE
+		if (wakeup_pipe[1] != -1) {
+			/* Ensure a possibly blocked event thread is awaken. */
+			write(wakeup_pipe[1], "Q", 1);
+		}
+#endif
 		SDL_WaitThread(SDL_EventThread, NULL);
 		SDL_EventThread = NULL;
 		SDL_DestroyMutex(SDL_EventLock.lock);
@@ -221,6 +235,13 @@ void SDL_StopEventLoop(void)
 	SDL_EventQ.head = 0;
 	SDL_EventQ.tail = 0;
 	SDL_EventQ.wmmsg_next = 0;
+
+#ifdef SDL_EVENT_WAKEUP_PIPE
+	close(wakeup_pipe[0]);
+	close(wakeup_pipe[1]);
+	wakeup_pipe[0] = -1;
+	wakeup_pipe[1] = -1;
+#endif
 }
 
 /* This function (and associated calls) may be called more than once */
@@ -240,6 +261,18 @@ int SDL_StartEventLoop(Uint32 flags)
 	/* It's not save to call SDL_EventState() yet */
 	SDL_eventstate &= ~(0x00000001 << SDL_SYSWMEVENT);
 	SDL_ProcessEvents[SDL_SYSWMEVENT] = SDL_IGNORE;
+
+#ifdef SDL_EVENT_WAKEUP_PIPE
+	retcode = pipe(wakeup_pipe);
+	if (retcode != 0) {
+		return -1;
+	}
+	retcode += fcntl(wakeup_pipe[0], F_SETFD, FD_CLOEXEC);
+	retcode += fcntl(wakeup_pipe[1], F_SETFD, FD_CLOEXEC);
+	if (retcode != 0) {
+		return -1;
+	}
+#endif
 
 	/* Initialize event handlers */
 	retcode = 0;
@@ -283,6 +316,11 @@ static int SDL_AddEvent(SDL_Event *event)
 		SDL_EventQ.tail = tail;
 		added = 1;
 	}
+#ifdef SDL_EVENT_WAKEUP_PIPE
+	if (added && wakeup_pipe[1] != -1) {
+		write(wakeup_pipe[1], "E", 1);
+	}
+#endif
 	return(added);
 }
 
@@ -290,6 +328,13 @@ static int SDL_AddEvent(SDL_Event *event)
 /*                           -- called with the queue locked */
 static int SDL_CutEvent(int spot)
 {
+#ifdef SDL_EVENT_WAKEUP_PIPE
+	if (wakeup_pipe[0] != -1) {
+		/* Read one character from the pipe. */
+		char c;
+		read(wakeup_pipe[0], &c, 1);
+	}
+#endif
 	if ( spot == SDL_EventQ.head ) {
 		SDL_EventQ.head = (SDL_EventQ.head+1)%MAXEVENTS;
 		return(SDL_EventQ.head);
@@ -388,6 +433,35 @@ void SDL_PumpEvents(void)
 	}
 }
 
+void SDL_WaitForEvent(void)
+{
+#ifdef SDL_EVENT_WAKEUP_PIPE
+	int can_select = current_video && current_video->can_select &&
+		wakeup_pipe[0] != -1 &&
+		(SDL_numjoysticks == 0 || !(SDL_eventstate & SDL_JOYEVENTMASK));
+	if (can_select) {
+		int vfd = current_video->monitor_fd;
+		int nfds;
+		fd_set rfds;
+
+		FD_ZERO(&rfds);
+		FD_SET(wakeup_pipe[0], &rfds);
+		nfds = wakeup_pipe[0] + 1;
+
+		if ( vfd != -1 ) {
+			/* Also monitor video device FD if any. */
+			FD_SET(vfd, &rfds);
+			if (vfd + 1 > nfds) nfds = vfd + 1;
+		}
+
+		select(nfds, &rfds, NULL, NULL, NULL);
+
+		return;
+	}
+#endif
+	SDL_Delay(10);
+}
+
 /* Public functions */
 
 int SDL_PollEvent (SDL_Event *event)
@@ -407,7 +481,7 @@ int SDL_WaitEvent (SDL_Event *event)
 		switch(SDL_PeepEvents(event, 1, SDL_GETEVENT, SDL_ALLEVENTS)) {
 		    case -1: return 0;
 		    case 1: return 1;
-		    case 0: SDL_Delay(10);
+		    case 0: SDL_WaitForEvent();
 		}
 	}
 }
