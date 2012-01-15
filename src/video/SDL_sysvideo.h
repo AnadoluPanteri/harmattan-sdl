@@ -130,6 +130,9 @@ struct SDL_VideoDevice {
 	 */
 	int (*CheckHWBlit)(_THIS, SDL_Surface *src, SDL_Surface *dst);
 
+	/* Checks if a surface rectangle can be filled with the given color, by the hardware; otherwise, software must be used.Z */
+	int (*CheckHWFill)(_THIS, SDL_Surface *dst, SDL_Rect *rect, Uint32 color);
+
 	/* Fills a surface rectangle with the given color */
 	int (*FillHWRect)(_THIS, SDL_Surface *dst, SDL_Rect *rect, Uint32 color);
 

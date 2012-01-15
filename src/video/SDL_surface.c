@@ -593,7 +593,9 @@ int SDL_FillRect(SDL_Surface *dst, SDL_Rect *dstrect, Uint32 color)
 			hw_rect.y += current_video->offset_y;
 			dstrect = &hw_rect;
 		}
-		return(video->FillHWRect(this, dst, dstrect, color));
+		if (!video->CheckHWFill || video->CheckHWFill(this, dst, dstrect, color)) {
+			return(video->FillHWRect(this, dst, dstrect, color));
+		}
 	}
 
 	/* Perform software fill */
