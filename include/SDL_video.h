@@ -141,6 +141,8 @@ typedef struct SDL_Surface {
 #define SDL_FULLSCREEN	0x80000000	/**< Surface is a full screen display */
 #define SDL_OPENGL      0x00000002      /**< Create an OpenGL rendering context */
 #define SDL_OPENGLBLIT	0x0000000A	/**< Create an OpenGL rendering context and use it for blitting */
+#define SDL_OPENGLES    0x00000040  /* Create an OpenGL-ES rendering context */
+#define SDL_OPENGLESBLIT 0x00000048 /* Create an OpenGL-ES rendering context and use it for blitting  */
 #define SDL_RESIZABLE	0x00000010	/**< This video mode may be resized */
 #define SDL_NOFRAME	0x00000020	/**< No window caption or edge frame */
 /*@}*/
@@ -244,6 +246,9 @@ typedef enum {
     SDL_GL_MULTISAMPLEBUFFERS,
     SDL_GL_MULTISAMPLESAMPLES,
     SDL_GL_ACCELERATED_VISUAL,
+	SDL_GL_RETAINED_BACKING,
+	SDL_GL_CONTEXT_MAJOR_VERSION,
+	SDL_GL_CONTEXT_MINOR_VERSION,
     SDL_GL_SWAP_CONTROL
 } SDL_GLattr;
 
@@ -871,6 +876,29 @@ extern DECLSPEC void SDLCALL SDL_GL_UpdateRects(int numrects, SDL_Rect* rects);
 extern DECLSPEC void SDLCALL SDL_GL_Lock(void);
 extern DECLSPEC void SDLCALL SDL_GL_Unlock(void);
 /*@}*/
+
+/*@}*/
+
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
+/** @name OpenGL ES support functions.                                          */ /*@{*/
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
+
+/**
+ * Dynamically load an OpenGL ES driver, if SDL is built with dynamic GL.
+ *
+ * SDL links normally with the OpenGL ES library on your system by default,
+ * but you can compile it to dynamically load the GL driver at runtime.
+ * If you do this, you need to retrieve all of the OpenGL ES functions used in
+ * your program from the dynamic library using SDL_GLES_GetProcAddress().
+ *
+ * This is disabled in default builds of SDL.
+*/
+extern DECLSPEC int SDLCALL SDL_GLES_LoadLibrary(const char *path);
+
+/**
+ * Get the address of an OpenGL ES (extension) function
+ */
+extern DECLSPEC void * SDLCALL SDL_GLES_GetProcAddress(const char* proc);
 
 /*@}*/
 

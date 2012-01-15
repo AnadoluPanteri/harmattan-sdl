@@ -1737,6 +1737,30 @@ AC_HELP_STRING([--enable-osmesa-shared], [dynamically load OSMesa OpenGL support
     fi
 }
 
+dnl Check to see if OpenGL support is desired
+AC_ARG_ENABLE(video-opengl-es,
+AC_HELP_STRING([--enable-video-opengl-es], [include OpenGL ES context creation [[default=yes]]]),
+              , enable_video_opengl_es=yes)
+
+dnl Find OpenGL
+CheckEGL()
+{
+    if test x$enable_video = xyes -a x$enable_video_opengl_es = xyes; then
+        AC_MSG_CHECKING(for OpenGL ES (EGL) support)
+        video_opengl_es=no
+        AC_TRY_COMPILE([
+         #include <EGL/egl.h>
+        ],[
+        ],[
+        video_opengl_es=yes
+        ])
+        AC_MSG_RESULT($video_opengl_es)
+        if test x$video_opengl_es = xyes; then
+            AC_DEFINE(SDL_VIDEO_OPENGL_ES)
+        fi
+    fi
+}
+
 AC_ARG_ENABLE(screensaver,
 AC_HELP_STRING([--enable-screensaver], [enable screensaver by default while any SDL application is running [[default=no]]]),
               , enable_screensaver=no)
@@ -2334,6 +2358,7 @@ case "$host" in
         CheckQtopia
         CheckPicoGUI
         CheckOpenGLX11
+		CheckEGL
         CheckInputEvents
         CheckTslib
         CheckUSBHID

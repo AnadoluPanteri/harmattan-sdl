@@ -35,7 +35,9 @@
 
 #if SDL_VIDEO_OPENGL
 #include "SDL_opengl.h"
-#endif /* SDL_VIDEO_OPENGL */
+#elif SDL_VIDEO_OPENGL_ES
+#include "SDL_opengles.h"
+#endif
 
 /* The SDL video driver */
 typedef struct SDL_VideoDevice SDL_VideoDevice;
@@ -182,15 +184,39 @@ struct SDL_VideoDevice {
 	/* Swap the current buffers in double buffer mode. */
 	void (*GL_SwapBuffers)(_THIS);
 
+	/* Sets the dll to use for OpenGL ES and loads it */
+	int (*GLES_LoadLibrary)(_THIS, const char *path);
+
+	/* Retrieves the address of a function in the gl library */
+	void* (*GLES_GetProcAddress)(_THIS, const char *proc);
+
+	/* Get attribute information from the windowing system. */
+	int (*GLES_GetAttribute)(_THIS, SDL_GLattr attrib, int* value);
+
+	/* Make the context associated with this driver current */
+	int (*GLES_MakeCurrent)(_THIS);
+
+	/* Swap the current buffers in double buffer mode. */
+	void (*GLES_SwapBuffers)(_THIS);
+
   	/* OpenGL functions for SDL_OPENGLBLIT */
-#if SDL_VIDEO_OPENGL
 #if !defined(__WIN32__)
 #define WINAPI
 #endif
+
+#if SDL_VIDEO_OPENGL
 #define SDL_PROC(ret,func,params) ret (WINAPI *func) params;
 #include "SDL_glfuncs.h"
 #undef SDL_PROC
+#endif
 
+#if SDL_VIDEO_OPENGL_ES
+#define SDL_PROC(ret,func,params) ret (WINAPI *(GLES_##func)) params;
+#include "SDL_glesfuncs.h"
+#undef SDL_PROC
+#endif
+
+#if SDL_VIDEO_OPENGL | SDL_VIDEO_OPENGL_ES
 	/* Texture id */
 	GLuint texture;
 #endif
@@ -295,6 +321,9 @@ struct SDL_VideoDevice {
 		int multisamplebuffers;
 		int multisamplesamples;
 		int accelerated;
+		int major_version;
+		int minor_version;
+		int retained_backing;
 		int swap_control;
 		int driver_loaded;
 		char driver_path[256];
@@ -305,6 +334,7 @@ struct SDL_VideoDevice {
 	/* Data private to this driver */
 	struct SDL_PrivateVideoData *hidden;
 	struct SDL_PrivateGLData *gl_data;
+	struct SDL_PrivateGLESData *gles_data;
 
 	/* * * */
 	/* The function used to dispose of this structure */

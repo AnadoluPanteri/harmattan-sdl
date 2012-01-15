@@ -1072,7 +1072,7 @@ int X11_EnterFullScreen(_THIS)
     /* We may need to refresh the screen at this point (no backing store)
        We also don't get an event, which is why we explicitly refresh. */
     if ( this->screen ) {
-        if ( this->screen->flags & SDL_OPENGL ) {
+        if ( this->screen->flags & (SDL_OPENGL|SDL_OPENGLES) ) {
             SDL_PrivateExpose();
         } else {
             X11_RefreshDisplay(this);
@@ -1134,7 +1134,7 @@ int X11_LeaveFullScreen(_THIS)
     /* We may need to refresh the screen at this point (no backing store)
        We also don't get an event, which is why we explicitly refresh. */
     if ( this->screen ) {
-        if ( this->screen->flags & SDL_OPENGL ) {
+        if ( this->screen->flags & (SDL_OPENGL|SDL_OPENGLES) ) {
             SDL_PrivateExpose();
         } else {
             X11_RefreshDisplay(this);
