@@ -701,6 +701,9 @@ static int X11_VideoInit(_THIS, SDL_PixelFormat *vformat)
 	/* Fill in some window manager capabilities */
 	this->info.wm_available = 1;
 
+	this->can_select = 1;
+	this->monitor_fd = ConnectionNumber(SDL_Display);
+
 	/* We're done! */
 	XFlush(SDL_Display);
 	return(0);
