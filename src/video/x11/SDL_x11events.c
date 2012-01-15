@@ -24,6 +24,7 @@
 /* Handle the event stream, converting X11 events into SDL events */
 
 #include <setjmp.h>
+#include <math.h>
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
 #include <X11/keysym.h>
@@ -384,6 +385,170 @@ static __inline__ int X11_WarpedMotion(_THIS, XEvent *xevent)
 	}
 	return(posted);
 }
+
+#if SDL_VIDEO_DRIVER_X11_XINPUT2
+int X11_XInput2_SetMasterPointer(_THIS, int deviceid)
+{
+	int device_count = 0, i;
+	if (xi_master) {
+		XIFreeDeviceInfo(xi_master);
+		xi_master = NULL;
+	}
+
+	have_touch = 0;
+
+	xi_master = XIQueryDevice(SDL_Display, deviceid, &device_count);
+	if (!xi_master) {
+		/* Master deviceid no longer exists? */
+		return -1;
+	}
+
+	for (i = 0; i < xi_master->num_classes; i++) {
+		if (xi_master->classes[i]->type == XIValuatorClass) {
+			XIValuatorClassInfo *valuator = (XIValuatorClassInfo*)(xi_master->classes[i]);
+			if (valuator->label == atom(AbsMTTrackingID)) {
+				have_touch = 1;
+				break;
+			}
+		}
+	}
+
+	return 0;
+}
+
+static inline void X11_XInput2_ClipTouch(Sint16* val, int min, int size)
+{
+	if (*val < min || *val > (min + size)) {
+		*val = -1;
+	} else {
+		*val -= min;
+	}
+}
+
+static int X11_XInput2_DispatchTouchDeviceEvent(_THIS, XIDeviceEvent *e)
+{
+	double v;
+	Sint16 x, y;
+	Uint16 active;
+	int i;
+
+	/* Sadly, we need to scale and clip the coordinates on our own. Prepare for this. */
+	const int screen_w = DisplayWidth(SDL_Display, SDL_Screen);
+	const int screen_h = DisplayHeight(SDL_Display, SDL_Screen);
+
+	active = 0;
+	for (i = 0; i < xi_master->num_classes; i++) {
+		XIAnyClassInfo* any = xi_master->classes[i];
+		if (xi_master->classes[i]->type == XIValuatorClass) {
+			XIValuatorClassInfo *valuator = (XIValuatorClassInfo*)(xi_master->classes[i]);
+			int n = valuator->number;
+
+			if (!XIMaskIsSet(e->valuators.mask, n)) {
+				/* This event does not contain this evaluator's value. */
+				continue;
+			}
+
+			if (valuator->label == atom(AbsMTPositionX)) {
+				v = e->valuators.values[n];
+				v = (v - valuator->min) / (valuator->max - valuator->min);
+				x = round(screen_w * v);
+				X11_XInput2_ClipTouch(&x, window_x, window_w);
+			} else if (valuator->label == atom(AbsMTPositionY)) {
+				v = e->valuators.values[n];
+				v = (v - valuator->min) / (valuator->max - valuator->min);
+				y = round(screen_h * v);
+				X11_XInput2_ClipTouch(&y, window_y, window_h);
+			} else if (valuator->label == atom(AbsMTTrackingID)) {
+				/* Tracking ID is always the last valuator for a contact point,
+				 * and indicates which finger we have been talking about previously. */
+				int id = e->valuators.values[n];
+				if (id >= SDL_MAXMOUSE) {
+					/* Too many contact points! Discard! */
+					continue;
+				}
+				if (x == -1 || y == -1) {
+					/* Outside of the window, discard. */
+					continue;
+				}
+				active |= 1 << id;
+				if (SDL_GetMultiMouseState(id, NULL, NULL)) {
+					/* We already knew about this finger; therefore, this is motion. */
+					SDL_PrivateMultiMouseMotion(id, SDL_BUTTON_LMASK, 0, x, y);
+				} else {
+					/* We did not know about this finger; therefore, this is a button press. */
+					SDL_PrivateMultiMouseMotion(id, 0, 0, x, y);
+					SDL_PrivateMultiMouseButton(id, SDL_PRESSED, SDL_BUTTON_LEFT, 0, 0);
+				}
+			}
+		}
+	}
+
+	/* Now enumerate all mouses and kill those that are not active. */
+	for (i = 0; i < SDL_MAXMOUSE; i++) {
+		if (!(active & (1 << i))) {
+			SDL_ResetMultiMouse(i); /* Will send released events for pressed buttons. */
+		}
+	}
+
+	return 1;
+}
+
+static int X11_XInput2_DispatchPointerDeviceEvent(_THIS, XIDeviceEvent *e)
+{
+	switch (e->evtype) {
+		case XI_ButtonPress:
+			return SDL_PrivateMouseButton(SDL_PRESSED, e->detail, 0, 0);
+		case XI_ButtonRelease:
+			return SDL_PrivateMouseButton(SDL_RELEASED, e->detail, 0, 0);
+		case XI_Motion:
+			if ( SDL_VideoSurface ) {
+				int x = round(e->event_x), y = round(e->event_y);
+#ifdef DEBUG_MOTION
+	  			printf("X11 motion: %d,%d\n", x, y);
+#endif
+				return SDL_PrivateMouseMotion(0, 0, x, y);
+			}
+		default:
+			return 0;
+	}
+}
+
+static int X11_XInput2_DispatchDeviceChangedEvent(_THIS, XIDeviceChangedEvent *e)
+{
+	if (xi_master && e->deviceid == xi_master->deviceid) {
+		/* Only care about slave change events of the master pointer, for now. */
+		SDL_ResetMouse();
+		X11_XInput2_SetMasterPointer(this, e->deviceid);
+		return 1;
+	}
+	return 0;
+}
+
+static int X11_XInput2_DispatchEvent(_THIS, XIEvent *xevent)
+{
+	switch (xevent->evtype) {
+		case XI_ButtonPress:
+		case XI_ButtonRelease:
+		case XI_Motion:
+			if (have_touch) {
+				return X11_XInput2_DispatchTouchDeviceEvent(this, (XIDeviceEvent*) xevent);
+			} else {
+				return X11_XInput2_DispatchPointerDeviceEvent(this, (XIDeviceEvent*) xevent);
+			}
+			break;
+		case XI_DeviceChanged:
+			X11_XInput2_DispatchDeviceChangedEvent(this, (XIDeviceChangedEvent*) xevent);
+			return 1;
+			break;
+		default:
+#ifdef DEBUG_XEVENTS
+			printf("Unhandled XInput2 event %d\n", xevent->evtype);
+#endif
+			return 0;
+			break;
+	}
+}
+#endif /* SDL_VIDEO_DRIVER_X11_XINPUT2 */
 
 static int X11_DispatchEvent(_THIS)
 {
@@ -928,6 +1093,17 @@ printf("Expose (count = %d)\n", xevent.xexpose.count);
 		}
 	    }
 	    break;
+
+		case GenericEvent:
+#if SDL_VIDEO_DRIVER_X11_XINPUT2
+			if (use_xinput2 && xevent.xcookie.extension == xi_opcode) {
+				if (XGetEventData(SDL_Display, &xevent.xcookie)) {
+					posted = X11_XInput2_DispatchEvent(this, (XIEvent*) xevent.xcookie.data);
+					XFreeEventData(SDL_Display, &xevent.xcookie);
+				}
+			}
+#endif /* SDL_VIDEO_DRIVER_X11_XINPUT2 */
+		break;
 
 	    default: {
 #ifdef DEBUG_XEVENTS

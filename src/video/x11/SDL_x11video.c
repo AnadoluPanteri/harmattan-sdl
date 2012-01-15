@@ -628,6 +628,41 @@ static int X11_VideoInit(_THIS, SDL_PixelFormat *vformat)
 	}
 #endif /* NO_SHARED_MEMORY */
 
+#if SDL_VIDEO_DRIVER_X11_XINPUT2
+	use_xinput2 = 0;
+	have_touch = 0;
+	xi_master = NULL;
+	if (SDL_X11_HAVE_XI) {
+		int event, error;
+		if (XQueryExtension(SDL_Display, "XInputExtension", &xi_opcode,
+				&event, &error)) {
+			int major = 2;
+			int minor = 0;
+			if (XIQueryVersion(SDL_Display, &major, &minor) == Success) {
+				use_xinput2 = 1;
+			}
+		}
+		if (use_xinput2) {
+			/* Find the master pointer and keep a reference to it. */
+			int device_count = 0;
+			XIDeviceInfo *devices = XIQueryDevice(SDL_Display, XIAllMasterDevices, &device_count);
+			if (devices) {
+				for (i = 0; i < device_count; i++) {
+					if (devices[i].use == XIMasterPointer) {
+						X11_XInput2_SetMasterPointer(this, devices[i].deviceid);
+						break;
+					}
+				}
+				XIFreeDeviceInfo(devices);
+			}
+			if (!xi_master) {
+				/* No master pointer found? Broken XInput configuration. */
+				use_xinput2 = 0;
+			}
+		}
+	}
+#endif /* SDL_VIDEO_DRIVER_X11_XINPUT2 */
+
 	/* Get the available video modes */
 	if(X11_GetVideoModes(this) < 0) {
 		XCloseDisplay(GFX_Display);
@@ -1048,10 +1083,31 @@ static int X11_CreateWindow(_THIS, SDL_Surface *screen,
 		                           	| CWColormap, &swa);
 		}
 		/* Only manage our input if we own the window */
-		XSelectInput(SDL_Display, SDL_Window,
-					( EnterWindowMask | LeaveWindowMask
-					| ButtonPressMask | ButtonReleaseMask
-					| PointerMotionMask | ExposureMask ));
+		int event_mask = EnterWindowMask | LeaveWindowMask
+						| ButtonPressMask | ButtonReleaseMask
+						| PointerMotionMask | ExposureMask;
+#if SDL_VIDEO_DRIVER_X11_XINPUT2
+		if (use_xinput2) {
+			XIEventMask mask;
+			unsigned char bitmask[XIMaskLen(XI_LASTEVENT)] = { 0 };
+			mask.deviceid = XIAllMasterDevices;
+			mask.mask = bitmask;
+			mask.mask_len = sizeof(bitmask);
+
+			/* For now, just capture mouse events. */
+			XISetMask(bitmask, XI_ButtonPress);
+			XISetMask(bitmask, XI_ButtonRelease);
+			XISetMask(bitmask, XI_Motion);
+			/* As well as new device events. */
+			XISetMask(bitmask, XI_DeviceChanged);
+
+			XISelectEvents(SDL_Display, SDL_Window, &mask, 1);
+
+			/* We are no longer interested in the core protocol events. */
+			event_mask &= ~(ButtonPressMask | ButtonReleaseMask | PointerMotionMask);
+		}
+#endif
+		XSelectInput(SDL_Display, SDL_Window, event_mask);
 	}
 	/* Create the graphics context here, once we have a window */
 	if ( flags & SDL_OPENGLES ) {

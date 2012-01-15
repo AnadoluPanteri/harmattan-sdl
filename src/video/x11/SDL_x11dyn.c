@@ -52,6 +52,10 @@ typedef struct
 #ifndef SDL_VIDEO_DRIVER_X11_DYNAMIC_XRANDR
 #define SDL_VIDEO_DRIVER_X11_DYNAMIC_XRANDR NULL
 #endif
+#ifndef SDL_VIDEO_DRIVER_X11_DYNAMIC_XI
+#define SDL_VIDEO_DRIVER_X11_DYNAMIC_XI NULL
+#endif
+
 
 static x11dynlib x11libs[] =
 {
@@ -59,6 +63,7 @@ static x11dynlib x11libs[] =
     { NULL, SDL_VIDEO_DRIVER_X11_DYNAMIC_XEXT },
     { NULL, SDL_VIDEO_DRIVER_X11_DYNAMIC_XRENDER },
     { NULL, SDL_VIDEO_DRIVER_X11_DYNAMIC_XRANDR },
+    { NULL, SDL_VIDEO_DRIVER_X11_DYNAMIC_XI },
 };
 
 static void X11_GetSym(const char *fnname, int *rc, void **fn)

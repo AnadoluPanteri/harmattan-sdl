@@ -194,5 +194,17 @@ SDL_X11_SYM(Status,XRRSetScreenConfig,(Display *dpy, XRRScreenConfiguration *con
 SDL_X11_SYM(void,XRRFreeScreenConfigInfo,(XRRScreenConfiguration *config),(config),)
 #endif
 
+/* XInput2 support */
+#if SDL_VIDEO_DRIVER_X11_XINPUT2
+SDL_X11_MODULE(XI)
+SDL_X11_SYM(Status,XIQueryVersion,(Display *dpy, int *major_version_inout, int *minor_version_inout),(dpy,major_version_inout,minor_version_inout),return)
+SDL_X11_SYM(XIDeviceInfo*,XIQueryDevice,(Display *dpy, int deviceid, int *ndevices_return),(dpy,deviceid,ndevices_return),return)
+SDL_X11_SYM(int,XISelectEvents,(Display *dpy, Window win, XIEventMask *masks, int num_masks),(dpy,win,masks,num_masks),return)
+SDL_X11_SYM(void,XIFreeDeviceInfo,(XIDeviceInfo *info),(info),)
+/* These are technically Xlib symbols, but we only use them if XInput2 is enabled. */
+SDL_X11_SYM(Bool,XGetEventData,(Display *dpy, XGenericEventCookie *cookie),(dpy,cookie),return)
+SDL_X11_SYM(void,XFreeEventData,(Display *dpy, XGenericEventCookie *cookie),(dpy,cookie),)
+#endif
+
 /* end of SDL_x11sym.h ... */
 

@@ -49,6 +49,10 @@
 #include <X11/extensions/Xrandr.h>
 #endif
 
+#if SDL_VIDEO_DRIVER_X11_XINPUT2
+#include <X11/extensions/XInput2.h>
+#endif
+
 /*
  * When using the "dynamic X11" functionality, we duplicate all the Xlib
  *  symbols that would be referenced by SDL inside of SDL itself.

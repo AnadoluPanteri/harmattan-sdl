@@ -46,6 +46,9 @@
 #if SDL_VIDEO_DRIVER_X11_XME
 #include "../Xext/extensions/xme.h"
 #endif
+#if SDL_VIDEO_DRIVER_X11_XINPUT2
+#include <X11/extensions/XInput2.h>
+#endif
 
 #include "SDL_x11dyn.h"
 
@@ -130,6 +133,12 @@ struct SDL_PrivateVideoData {
     int saved_size_id;
     Rotation saved_rotation;
 #endif
+#if SDL_VIDEO_DRIVER_X11_XINPUT2
+    int use_xinput2;
+    int xi_opcode;
+    XIDeviceInfo *xi_master;
+    int have_touch;
+#endif
 #if SDL_VIDEO_DRIVER_X11_VIDMODE
     SDL_NAME(XF86VidModeModeInfo) saved_mode;
     struct {
@@ -195,6 +204,10 @@ struct SDL_PrivateVideoData {
 #define screen_config		(this->hidden->screen_config)
 #define saved_size_id		(this->hidden->saved_size_id)
 #define saved_rotation		(this->hidden->saved_rotation)
+#define use_xinput2		(this->hidden->use_xinput2)
+#define xi_opcode			(this->hidden->xi_opcode)
+#define xi_master			(this->hidden->xi_master)
+#define have_touch			(this->hidden->have_touch)
 #define use_xinerama		(this->hidden->use_xinerama)
 #define use_vidmode		(this->hidden->use_vidmode)
 #define use_xrandr		(this->hidden->use_xrandr)

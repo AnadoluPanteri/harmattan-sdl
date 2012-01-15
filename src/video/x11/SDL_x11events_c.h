@@ -27,3 +27,7 @@
 extern void X11_InitOSKeymap(_THIS);
 extern void X11_PumpEvents(_THIS);
 extern void X11_SetKeyboardState(Display *display, const char *key_vec);
+
+#if SDL_VIDEO_DRIVER_X11_XINPUT2
+extern int X11_XInput2_SetMasterPointer(_THIS, int deviceid);
+#endif /* SDL_VIDEO_DRIVER_X11_XINPUT2 */
