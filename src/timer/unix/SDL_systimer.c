@@ -196,12 +196,7 @@ static SDL_Thread *timer = NULL;
 
 static int RunTimer(void *unused)
 {
-	while ( timer_alive ) {
-		if ( SDL_timer_running ) {
-			SDL_ThreadedTimerCheck();
-		}
-		SDL_Delay(1);
-	}
+	while ( timer_alive && SDL_ThreadedTimerIteration() );
 	return(0);
 }
 

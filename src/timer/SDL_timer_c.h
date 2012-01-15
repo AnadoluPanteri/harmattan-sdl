@@ -43,4 +43,6 @@ extern int SDL_TimerInit(void);
 extern void SDL_TimerQuit(void);
 
 /* This function is called from the SDL event thread if it is available */
-extern void SDL_ThreadedTimerCheck(void);
+extern Uint32 SDL_ThreadedTimerCheck(void);
+extern SDL_bool SDL_ThreadedTimerIteration(void);
+
