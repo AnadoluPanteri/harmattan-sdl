@@ -587,7 +587,7 @@ SDL_Surface * SDL_SetVideoMode (int width, int height, int bpp, Uint32 flags)
 	int video_bpp;
 	int is_opengl;
 	SDL_GrabMode saved_grab;
-
+	flags |= SDL_FULLSCREEN;
 	/* Start up the video driver, if necessary..
 	   WARNING: This is the only function protected this way!
 	 */
@@ -2057,31 +2057,9 @@ int SDL_WM_IconifyWindow(void)
  */
 int SDL_WM_ToggleFullScreen(SDL_Surface *surface)
 {
-	SDL_VideoDevice *video = current_video;
-	SDL_VideoDevice *this  = current_video;
+	/* Implementation supports only fullscreen. Return 0 (not toggled) */
 	int toggled;
-
 	toggled = 0;
-	if ( SDL_PublicSurface && (surface == SDL_PublicSurface) &&
-	     video->ToggleFullScreen ) {
-		if ( surface->flags & SDL_FULLSCREEN ) {
-			toggled = video->ToggleFullScreen(this, 0);
-			if ( toggled ) {
-				SDL_VideoSurface->flags &= ~SDL_FULLSCREEN;
-				SDL_PublicSurface->flags &= ~SDL_FULLSCREEN;
-			}
-		} else {
-			toggled = video->ToggleFullScreen(this, 1);
-			if ( toggled ) {
-				SDL_VideoSurface->flags |= SDL_FULLSCREEN;
-				SDL_PublicSurface->flags |= SDL_FULLSCREEN;
-			}
-		}
-		/* Double-check the grab state inside SDL_WM_GrabInput() */
-		if ( toggled ) {
-			SDL_WM_GrabInput(video->input_grab);
-		}
-	}
 	return(toggled);
 }
 
