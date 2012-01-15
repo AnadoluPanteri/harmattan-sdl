@@ -196,6 +196,13 @@ extern DECLSPEC SDL_audiostatus SDLCALL SDL_GetAudioStatus(void);
 extern DECLSPEC void SDLCALL SDL_PauseAudio(int pause_on);
 
 /**
+ * This function does the same as SDL_PauseAudio(), but can be called even
+ * when there's no active audio stream, and will override SDL_PauseAudio():
+ * Audio will only play if it is not suppressed and not paused.
+ */
+extern DECLSPEC void SDLCALL SDL_SuppressAudio(int pause_on);
+
+/**
  * This function loads a WAVE from the data source, automatically freeing
  * that source if 'freesrc' is non-zero.  For example, to load a WAVE file,
  * you could do:

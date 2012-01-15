@@ -116,6 +116,7 @@ static AudioBootStrap *bootstrap[] = {
 	NULL
 };
 SDL_AudioDevice *current_audio = NULL;
+static int suppress_audio = 0;
 
 /* Various local functions */
 int SDL_AudioInit(const char *driver_name);
@@ -176,6 +177,13 @@ int SDLCALL SDL_RunAudio(void *audiop)
 
 	/* Loop, filling the audio buffers */
 	while ( audio->enabled ) {
+		int pause_on = audio->paused || suppress_audio;
+		if ( audio->dev_paused != pause_on ) {
+			if ( audio->PauseAudio ) {
+				audio->PauseAudio(audio, pause_on);
+			}
+			audio->dev_paused = pause_on;
+		}
 
 		/* Fill the current buffer with sound */
 		if ( audio->convert.needed ) {
@@ -193,7 +201,7 @@ int SDLCALL SDL_RunAudio(void *audiop)
 
 		SDL_memset(stream, silence, stream_len);
 
-		if ( ! audio->paused ) {
+		if ( !pause_on ) {
 			SDL_mutexP(audio->mixer_lock);
 			(*fill)(udata, stream, stream_len);
 			SDL_mutexV(audio->mixer_lock);
@@ -223,8 +231,8 @@ int SDLCALL SDL_RunAudio(void *audiop)
 		}
 	}
 
-	/* Wait for the audio to drain.. */
-	if ( audio->WaitDone ) {
+	/* Wait for the audio to drain if not paused */
+	if ( !audio->paused && !suppress_audio && audio->WaitDone ) {
 		audio->WaitDone(audio);
 	}
 
@@ -576,7 +584,7 @@ SDL_audiostatus SDL_GetAudioStatus(void)
 
 	status = SDL_AUDIO_STOPPED;
 	if ( audio && audio->enabled ) {
-		if ( audio->paused ) {
+		if ( audio->paused || suppress_audio ) {
 			status = SDL_AUDIO_PAUSED;
 		} else {
 			status = SDL_AUDIO_PLAYING;
@@ -591,6 +599,20 @@ void SDL_PauseAudio (int pause_on)
 
 	if ( audio ) {
 		audio->paused = pause_on;
+		if ( !pause_on && audio->thread && audio->WakeAudio ) {
+			audio->WakeAudio(audio);
+		}
+	}
+}
+
+void SDL_SuppressAudio (int pause_on)
+{
+	SDL_AudioDevice *audio = current_audio;
+
+	suppress_audio = pause_on;
+
+	if ( !pause_on && audio && audio->thread && audio->WakeAudio ) {
+		audio->WakeAudio(audio);
 	}
 }
 
@@ -625,6 +647,9 @@ void SDL_AudioQuit(void)
 
 	if ( audio ) {
 		audio->enabled = 0;
+		if ( audio->thread && audio->WakeAudio ) {
+			audio->WakeAudio(audio);
+		}
 		if ( audio->thread != NULL ) {
 			SDL_WaitThread(audio->thread, NULL);
 		}

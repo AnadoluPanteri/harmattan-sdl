@@ -54,6 +54,8 @@ static int PULSE_OpenAudio(_THIS, SDL_AudioSpec *spec);
 static void PULSE_WaitAudio(_THIS);
 static void PULSE_PlayAudio(_THIS);
 static Uint8 *PULSE_GetAudioBuf(_THIS);
+static void PULSE_PauseAudio(_THIS, int pause_on);
+static void PULSE_WakeAudio(_THIS);
 static void PULSE_CloseAudio(_THIS);
 static void PULSE_WaitDone(_THIS);
 
@@ -85,6 +87,7 @@ static pa_channel_map* (*SDL_NAME(pa_channel_map_init_auto))(
 pa_mainloop * (*SDL_NAME(pa_mainloop_new))(void);
 pa_mainloop_api * (*SDL_NAME(pa_mainloop_get_api))(pa_mainloop *m);
 int (*SDL_NAME(pa_mainloop_iterate))(pa_mainloop *m, int block, int *retval);
+void (*SDL_NAME(pa_mainloop_wakeup))(pa_mainloop *m);
 void (*SDL_NAME(pa_mainloop_free))(pa_mainloop *m);
 
 pa_operation_state_t (*SDL_NAME(pa_operation_get_state))(pa_operation *o);
@@ -111,6 +114,8 @@ int (*SDL_NAME(pa_stream_write))(pa_stream *s, const void *data, size_t nbytes,
 	pa_free_cb_t free_cb, int64_t offset, pa_seek_mode_t seek);
 pa_operation * (*SDL_NAME(pa_stream_drain))(pa_stream *s,
 	pa_stream_success_cb_t cb, void *userdata);
+pa_operation * (*SDL_NAME(pa_stream_cork))(pa_stream *s, int b,
+	pa_stream_success_cb_t cb, void *userdata);
 int (*SDL_NAME(pa_stream_disconnect))(pa_stream *s);
 void (*SDL_NAME(pa_stream_unref))(pa_stream *s);
 
@@ -130,6 +135,8 @@ static struct {
 		(void **)&SDL_NAME(pa_mainloop_get_api)		},
 	{ "pa_mainloop_iterate",
 		(void **)&SDL_NAME(pa_mainloop_iterate)		},
+	{ "pa_mainloop_wakeup",
+		(void **)&SDL_NAME(pa_mainloop_wakeup)		},
 	{ "pa_mainloop_free",
 		(void **)&SDL_NAME(pa_mainloop_free)		},
 	{ "pa_operation_get_state",
@@ -160,6 +167,8 @@ static struct {
 		(void **)&SDL_NAME(pa_stream_write)		},
 	{ "pa_stream_drain",
 		(void **)&SDL_NAME(pa_stream_drain)		},
+	{ "pa_stream_cork",
+		(void **)&SDL_NAME(pa_stream_cork)	},
 	{ "pa_stream_disconnect",
 		(void **)&SDL_NAME(pa_stream_disconnect)	},
 	{ "pa_stream_unref",
@@ -279,7 +288,10 @@ static SDL_AudioDevice *Audio_CreateDevice(int devindex)
 	this->WaitAudio = PULSE_WaitAudio;
 	this->PlayAudio = PULSE_PlayAudio;
 	this->GetAudioBuf = PULSE_GetAudioBuf;
+	this->PauseAudio = PULSE_PauseAudio;
+	this->WakeAudio = PULSE_WakeAudio;
 	this->CloseAudio = PULSE_CloseAudio;
+
 	this->WaitDone = PULSE_WaitDone;
 
 	this->free = Audio_DeleteDevice;
@@ -295,23 +307,25 @@ AudioBootStrap PULSE_bootstrap = {
 /* This function waits until it is possible to write a full sound buffer */
 static void PULSE_WaitAudio(_THIS)
 {
-	int size;
-	while(1) {
+	do {
 		if (SDL_NAME(pa_context_get_state)(context) != PA_CONTEXT_READY ||
 		    SDL_NAME(pa_stream_get_state)(stream) != PA_STREAM_READY ||
 		    SDL_NAME(pa_mainloop_iterate)(mainloop, 1, NULL) < 0) {
 			this->enabled = 0;
 			return;
 		}
-		size = SDL_NAME(pa_stream_writable_size)(stream);
+		int size = SDL_NAME(pa_stream_writable_size)(stream);
 		if (size >= mixlen)
 			return;
-	}
+	} while (this->enabled && !this->dev_paused);
+	/* If dev_paused, go back to the mainloop if we are awaken to check stuff
+	 * like Unpause from time to time. */
 }
 
 static void PULSE_PlayAudio(_THIS)
 {
 	/* Write the audio data */
+	if (this->dev_paused) return;
 	if (SDL_NAME(pa_stream_write)(stream, mixbuf, mixlen, NULL, 0LL, PA_SEEK_RELATIVE) < 0)
 		this->enabled = 0;
 }
@@ -319,6 +333,31 @@ static void PULSE_PlayAudio(_THIS)
 static Uint8 *PULSE_GetAudioBuf(_THIS)
 {
 	return(mixbuf);
+}
+
+static void stream_cork_complete(pa_stream *s, int success, void *userdata) {
+}
+
+static void PULSE_PauseAudio(_THIS, int pause_on)
+{
+	pa_operation *o;
+
+	o = SDL_NAME(pa_stream_cork)(stream, pause_on, stream_cork_complete, NULL);
+	if (!o)
+		return;
+
+	/* Pausing audio can be an asynchronous operation;
+	 * we will send silence in the meanwhile. */
+
+	SDL_NAME(pa_operation_unref)(o);
+}
+
+static void PULSE_WakeAudio(_THIS)
+{
+	/* This can be called asynchronously to wakeup the audio thread. */
+	if (mainloop != NULL) {
+		SDL_NAME(pa_mainloop_wakeup)(mainloop);
+	}
 }
 
 static void PULSE_CloseAudio(_THIS)
@@ -401,7 +440,9 @@ static int PULSE_OpenAudio(_THIS, SDL_AudioSpec *spec)
 	pa_sample_spec  paspec;
 	pa_buffer_attr  paattr;
 	pa_channel_map  pacmap;
-	pa_stream_flags_t flags = 0;
+	pa_stream_flags_t flags = PA_STREAM_START_CORKED;
+
+	this->dev_paused = 1;
 
 	paspec.format = PA_SAMPLE_INVALID;
 	for ( test_format = SDL_FirstAudioFormat(spec->format); test_format; ) {
@@ -449,7 +490,7 @@ static int PULSE_OpenAudio(_THIS, SDL_AudioSpec *spec)
 	paattr.maxlength = -1;
 	paattr.minreq = mixlen; /* -1 can lead to pa_stream_writable_size()
 				   >= mixlen never becoming true */
-	flags = PA_STREAM_ADJUST_LATENCY;
+	flags |= PA_STREAM_ADJUST_LATENCY;
 #else
 	paattr.tlength = mixlen*2;
 	paattr.prebuf = mixlen*2;

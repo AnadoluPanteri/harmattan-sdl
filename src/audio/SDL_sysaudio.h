@@ -52,6 +52,8 @@ struct SDL_AudioDevice {
 	void (*PlayAudio)(_THIS);
 	Uint8 *(*GetAudioBuf)(_THIS);
 	void (*WaitDone)(_THIS);
+	void (*PauseAudio)(_THIS, int pause_on);
+	void (*WakeAudio)(_THIS);
 	void (*CloseAudio)(_THIS);
 
 	/* * * */
@@ -71,6 +73,7 @@ struct SDL_AudioDevice {
 	/* Current state flags */
 	int enabled;
 	int paused;
+	int dev_paused;
 	int opened;
 
 	/* Fake audio buffer for when the audio hardware is busy */
