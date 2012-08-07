@@ -33,7 +33,7 @@
 #include "SDL_x11modes_c.h"
 #include "SDL_x11image_c.h"
 
-/*#define X11MODES_DEBUG*/
+#define X11MODES_DEBUG
 
 #define MAX(a, b)        (a > b ? a : b)
 
@@ -103,6 +103,29 @@ static void restore_mode(_THIS)
     }
     if ( (saved_view.x != 0) || (saved_view.y != 0) ) {
         SDL_NAME(XF86VidModeSetViewPort)(SDL_Display, SDL_Screen, saved_view.x, saved_view.y);
+    }
+}
+#endif
+
+#if SDL_VIDEO_DRIVER_X11_XRANDR
+static int rr_width(XRRScreenSize *size, Rotation rot)
+{
+    switch (rot) {
+    case RR_Rotate_90:
+    case RR_Rotate_270:
+        return size->height;
+    default:
+        return size->width;
+    }
+}
+static int rr_height(XRRScreenSize *size, Rotation rot)
+{
+    switch (rot) {
+    case RR_Rotate_90:
+    case RR_Rotate_270:
+        return size->width;
+    default:
+        return size->height;
     }
 }
 #endif
@@ -217,11 +240,10 @@ static void set_best_resolution(_THIS, int width, int height)
         /* find the smallest resolution that is at least as big as the user requested */
         sizes = XRRConfigSizes(screen_config, &nsizes);
         for ( i = (nsizes-1); i >= 0; i-- ) {
-            if ( (SDL_modelist[i]->w >= width) &&
-                 (SDL_modelist[i]->h >= height) ) {
-                break;
-            }
-        }
+		if ( (SDL_modelist[i]->w >= width) &&
+		     (SDL_modelist[i]->h >= height) )
+			break;
+	}
 
         if ( i >= 0 && SDL_modelist[i] ) { /* found one, lets try it */
             int w, h;
@@ -240,9 +262,9 @@ static void set_best_resolution(_THIS, int width, int height)
 
                 /* find the matching size entry index */
                 for ( size_id = 0; size_id < nsizes; ++size_id ) {
-                    if ( (sizes[size_id].width == SDL_modelist[i]->w) &&
-                         (sizes[size_id].height == SDL_modelist[i]->h) )
-                        break;
+			if ( (rr_width(&sizes[size_id], saved_rotation) == SDL_modelist[i]->w) &&
+			     (rr_height(&sizes[size_id], saved_rotation) == SDL_modelist[i]->h) )
+				break;
                 }
 
                 XRRSetScreenConfig(SDL_Display, screen_config, SDL_Root,
@@ -298,8 +320,8 @@ static void get_real_resolution(_THIS, int* w, int* h)
 
             cur_size = XRRConfigCurrentConfiguration(screen_config, &cur_rotation);
             if ( cur_size >= 0 && cur_size < nsizes ) {
-                *w = sizes[cur_size].width;
-                *h = sizes[cur_size].height;
+		    *w = rr_width(&sizes[cur_size], cur_rotation);
+		    *h = rr_height(&sizes[cur_size], cur_rotation);
             }
 #ifdef X11MODES_DEBUG
             fprintf(stderr, "XRANDR: get_real_resolution: w = %d h = %d\n", *w, *h);
@@ -644,27 +666,27 @@ int X11_GetVideoModes(_THIS)
                 SDL_OutOfMemory();
                 return -1;
             }
+            saved_size_id = XRRConfigCurrentConfiguration(screen_config, &saved_rotation);
             for ( i=0; i < nsizes; i++ ) {
                 if ((SDL_modelist[i] =
                      (SDL_Rect *)malloc(sizeof(SDL_Rect))) == NULL)
                     break;
-#ifdef X11MODES_DEBUG
-                fprintf(stderr, "XRANDR: mode = %4d, w = %4d, h = %4d\n",
-                        i, sizes[i].width, sizes[i].height);
-#endif
 
                 SDL_modelist[i]->x = 0;
                 SDL_modelist[i]->y = 0;
-                SDL_modelist[i]->w = sizes[i].width;
-                SDL_modelist[i]->h = sizes[i].height;
+                SDL_modelist[i]->w = rr_width(&sizes[i], saved_rotation);
+                SDL_modelist[i]->h = rr_height(&sizes[i], saved_rotation);
 
+#ifdef X11MODES_DEBUG
+                fprintf(stderr, "XRANDR: mode = %4d, w = %4d, h = %4d\n",
+                        i, SDL_modelist[i]->w, SDL_modelist[i]->h);
+#endif
             }
             /* sort the mode list descending as SDL expects */
             SDL_qsort(SDL_modelist, nsizes, sizeof *SDL_modelist, cmpmodelist);
             SDL_modelist[i] = NULL; /* terminator */
 
             use_xrandr = xrandr_major * 100 + xrandr_minor;
-            saved_size_id = XRRConfigCurrentConfiguration(screen_config, &saved_rotation);
         }
     }
 #endif /* SDL_VIDEO_DRIVER_X11_XRANDR */

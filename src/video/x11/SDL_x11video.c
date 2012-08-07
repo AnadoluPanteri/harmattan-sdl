@@ -154,10 +154,11 @@ static SDL_VideoDevice *X11_CreateDevice(int devindex)
 		device->UpdateRects = NULL;
 		device->VideoQuit = X11_VideoQuit;
 		device->AllocHWSurface = X11_AllocHWSurface;
-		device->CheckHWBlit = NULL;
-		device->FillHWRect = NULL;
-		device->SetHWColorKey = NULL;
-		device->SetHWAlpha = NULL;
+		device->CheckHWBlit = X11_CheckHWBlit;
+		device->CheckHWFill = X11_CheckHWFill;
+		device->FillHWRect = X11_FillHWRect;
+		device->SetHWColorKey = X11_SetHWColorKey;
+		device->SetHWAlpha = X11_SetHWAlpha;
 		device->LockHWSurface = X11_LockHWSurface;
 		device->UnlockHWSurface = X11_UnlockHWSurface;
 		device->FlipHWSurface = X11_FlipHWSurface;
@@ -663,6 +664,13 @@ static int X11_VideoInit(_THIS, SDL_PixelFormat *vformat)
 	}
 #endif /* SDL_VIDEO_DRIVER_X11_XINPUT2 */
 
+	this->info.hw_available = 1;
+	this->info.blit_hw = 1;
+	this->info.blit_hw_CC = 1;
+	this->info.blit_hw_A = 1;
+	this->info.blit_fill = 1;
+	this->info.video_mem = 32 * 1024;
+
 	/* Get the available video modes */
 	if(X11_GetVideoModes(this) < 0) {
 		XCloseDisplay(GFX_Display);
@@ -938,6 +946,7 @@ static int X11_CreateWindow(_THIS, SDL_Surface *screen,
 
 	/* If a window is already present, destroy it and start fresh */
 	if ( SDL_Window ) {
+		X11_DestroyImage(this, screen);
 		X11_DestroyWindow(this, screen);
 	}
 
@@ -1122,6 +1131,8 @@ static int X11_CreateWindow(_THIS, SDL_Surface *screen,
 		} else {
 			screen->flags |= SDL_OPENGL;
 		}
+	} else if ( flags & SDL_HWSURFACE ) {
+		/* Hardware surfaces do not need a GC. */
 	} else {
 		XGCValues gcv;
 
@@ -1208,6 +1219,14 @@ SDL_Surface *X11_SetVideoMode(_THIS, SDL_Surface *current,
 				int width, int height, int bpp, Uint32 flags)
 {
 	Uint32 saved_flags;
+	int img_width, img_height;
+
+	/* FIXME */
+	img_width = width;
+	img_height = height;
+
+	width = DisplayWidth(SDL_Display, SDL_Screen);
+	height = DisplayHeight(SDL_Display, SDL_Screen);
 
 	/* Lock the event thread, in multi-threading environments */
 	SDL_Lock_EventThread();
@@ -1220,6 +1239,11 @@ SDL_Surface *X11_SetVideoMode(_THIS, SDL_Surface *current,
 		}
 	}
 
+	/* Clear HWSURFACE and DOUBLEBUF flags if not supported. */
+	if (!this->info.hw_available) {
+		flags &= ~(SDL_HWSURFACE|SDL_DOUBLEBUF);
+	}
+
 	/* Flush any delayed updates */
 	XSync(GFX_Display, False);
 
@@ -1228,6 +1252,7 @@ SDL_Surface *X11_SetVideoMode(_THIS, SDL_Surface *current,
 	if ( (SDL_Window)
 	      && ((saved_flags&SDL_OPENGL) == (flags&SDL_OPENGL))
 	      && ((saved_flags&SDL_OPENGLES) == (flags&SDL_OPENGLES))
+	      && ((saved_flags&SDL_HWSURFACE) == (flags&SDL_HWSURFACE))
 	      && (bpp == current->format->BitsPerPixel)
           && ((saved_flags&SDL_NOFRAME) == (flags&SDL_NOFRAME)) ) {
 		if (X11_ResizeWindow(this, current, width, height, flags) < 0) {
@@ -1270,11 +1295,13 @@ SDL_Surface *X11_SetVideoMode(_THIS, SDL_Surface *current,
 	}
 
 	/* Set up the new mode framebuffer */
-	if ( ((current->w != width) || (current->h != height))
+	if ( ((current->w != img_width) || (current->h != img_height))
           || ((saved_flags&SDL_OPENGL) != (flags&SDL_OPENGL))
-          || ((saved_flags&SDL_OPENGLES) != (flags&SDL_OPENGLES)) ) {
-		current->w = width;
-		current->h = height;
+          || ((saved_flags&SDL_OPENGLES) != (flags&SDL_OPENGLES))
+          || ((saved_flags&SDL_HWSURFACE) != (flags&SDL_HWSURFACE))
+          || ((saved_flags&SDL_DOUBLEBUF) != (flags&SDL_DOUBLEBUF)) ) {
+		current->w = img_width;
+		current->h = img_height;
 		current->pitch = SDL_CalculatePitch(current);
 		if (X11_ResizeImage(this, current, flags) < 0) {
 			current = NULL;
@@ -1314,12 +1341,14 @@ static int X11_ToggleFullScreen(_THIS, int on)
 	}
 	if ( on ) {
 		this->screen->flags |= SDL_FULLSCREEN;
-		X11_SetSizeHints(this, this->screen->w, this->screen->h, this->screen->flags);
+		//X11_SetSizeHints(this, this->screen->w, this->screen->h, this->screen->flags);
+		X11_SetSizeHints(this, DisplayWidth(SDL_Display, SDL_Screen), DisplayHeight(SDL_Display, SDL_Screen), this->screen->flags);
 		X11_EnterFullScreen(this);
 	} else {
 		this->screen->flags &= ~SDL_FULLSCREEN;
 		X11_LeaveFullScreen(this);
-		X11_SetSizeHints(this, this->screen->w, this->screen->h, this->screen->flags);
+		//X11_SetSizeHints(this, this->screen->w, this->screen->h, this->screen->flags);
+		X11_SetSizeHints(this, DisplayWidth(SDL_Display, SDL_Screen), DisplayHeight(SDL_Display, SDL_Screen), this->screen->flags);
 	}
 	X11_RefreshDisplay(this);
 	if ( event_thread ) {

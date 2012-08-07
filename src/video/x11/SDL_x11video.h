@@ -49,6 +49,8 @@
 #if SDL_VIDEO_DRIVER_X11_XINPUT2
 #include <X11/extensions/XInput2.h>
 #endif
+#include <EGL/egl.h>
+#include <GLES2/gl2.h>
 
 #include "SDL_x11dyn.h"
 
@@ -169,6 +171,20 @@ struct SDL_PrivateVideoData {
 
     /* Screensaver settings */
     int allow_screensaver;
+
+	struct {
+		EGLDisplay dpy;
+		EGLContext ctx;
+		EGLSurface surface;
+	} egl;
+	struct {
+		GLuint prog_fill;
+		GLuint prog_blit;
+		GLuint prog_ckey;
+		void *tex_hwdata;
+		void *fbo_hwdata;
+		int dirty;
+	} gl;
 };
 
 /* Old variable names */

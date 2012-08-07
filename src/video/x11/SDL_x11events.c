@@ -425,12 +425,14 @@ int X11_XInput2_SetMasterPointer(_THIS, int deviceid)
 
 static inline void X11_XInput2_ClipTouch(Sint16* val, int min, int size)
 {
-	if (*val < min || *val > (min + size)) {
+	if (*val < min || *val >= (min + size)) {
 		*val = -1;
 	} else {
 		*val -= min;
 	}
 }
+
+void X11_ScaleInput(SDL_VideoDevice *this, Sint16 *x, Sint16 *y);
 
 static int X11_XInput2_DispatchTouchDeviceEvent(_THIS, XIDeviceEvent *e)
 {
@@ -478,6 +480,7 @@ static int X11_XInput2_DispatchTouchDeviceEvent(_THIS, XIDeviceEvent *e)
 					continue;
 				}
 				active |= 1 << id;
+				X11_ScaleInput(this, &x, &y);
 				if (SDL_GetMultiMouseState(id, NULL, NULL)) {
 					/* We already knew about this finger; therefore, this is motion. */
 					SDL_PrivateMultiMouseMotion(id, SDL_BUTTON_LMASK, 0, x, y);
@@ -509,10 +512,11 @@ static int X11_XInput2_DispatchPointerDeviceEvent(_THIS, XIDeviceEvent *e)
 			return SDL_PrivateMouseButton(SDL_RELEASED, e->detail, 0, 0);
 		case XI_Motion:
 			if ( SDL_VideoSurface ) {
-				int x = round(e->event_x), y = round(e->event_y);
+				Sint16 x = round(e->event_x), y = round(e->event_y);
 #ifdef DEBUG_MOTION
 	  			printf("X11 motion: %d,%d\n", x, y);
 #endif
+				X11_ScaleInput(this, &x, &y);
 				return SDL_PrivateMouseMotion(0, 0, x, y);
 			}
 		default:
