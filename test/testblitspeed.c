@@ -342,8 +342,8 @@ static int setup_test(int argc, char **argv)
         SDL_SetAlpha(src, srcalphaflags, (Uint8) srcalpha);
 
     /* set some sane defaults so we can see if the blit code is broken... */
-    SDL_FillRect(dest, NULL, SDL_MapRGB(dest->format, 0, 0, 0));
-    SDL_FillRect(src, NULL, SDL_MapRGB(src->format, 0, 0, 0));
+    SDL_FillRect(dest, NULL, SDL_MapRGB(dest->format, 0, 255, 0));
+    SDL_FillRect(src, NULL, SDL_MapRGB(src->format, 0, 0, 255));
 
     blitCentered(src, bmp);
     SDL_FreeSurface(bmp);
@@ -359,7 +359,7 @@ static int setup_test(int argc, char **argv)
 
 static void test_blit_speed(void)
 {
-    Uint32 clearColor = SDL_MapRGB(dest->format, 0, 0, 0);
+    Uint32 clearColor = SDL_MapRGB(dest->format, 255, 0, 0);
     Uint32 iterations = 0;
     Uint32 elasped = 0;
     Uint32 end = 0;
